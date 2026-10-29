@@ -1,0 +1,559 @@
+import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { homedir } from 'node:os';
+import { basename, dirname, extname, join, normalize } from 'node:path';
+import pty from 'node-pty';
+import { WebSocketServer } from 'ws';
+import { codeStatus, proxyHttp, proxyUpgrade, setCodeTheme, startCodeServer } from './codeserver.ts';
+import { applyLicense, envDetails, envStatus, isConfigured, ports, REMOVE_STEPS, removeWorktree, SETUP_START_STEPS, SETUP_STEPS, setup, start, START_STEPS, stop, STOP_STEPS } from './devenv.ts';
+import { diff } from './diff.ts';
+import { getJob, startJob } from './jobs.ts';
+import { listening } from './net.ts';
+import { discover, forgetStats, openable, projects, real, refreshStats } from './projects.ts';
+import { addFolder, cleanFolder, folders, orderFolders, removeFolder, renameFolder } from './folders.ts';
+import { freshPr } from './prs.ts';
+import { hostStats } from './host.ts';
+import { addWorktree, recentBranches, repoAt } from './repo.ts';
+import { expandHome, loadSettings, saveSettings } from './settings.ts';
+import { capture, CmdError, run, stripAnsi, tail } from './sh.ts';
+import { logFile, pastRuns, STATE_ROOT, updateState } from './state.ts';
+import { shareOnTailnet, tailscaleStatus } from './tailscale.ts';
+import { cleanEnv, createSession, killSession, listSessions, moveSession, oneTerminalEach, orderSessions, renameSession, reply, safeName, scrubServerEnv, setFolder, tmux, tmuxArgs, VIEWER_SEP, withAgents } from './tmux.ts';
+import { tools } from './workspace.ts';
+
+const HOST = process.env.HOST || '127.0.0.1';
+const PORT = Number(process.env.PORT || 4317);
+const ROOT = join(import.meta.dirname, '..');
+const PUBLIC = join(ROOT, 'public');
+
+// Browser libraries are served from node_modules so the app works offline and loads nothing from a CDN.
+const VENDOR: Record<string, string> = {
+  'preact.js': 'node_modules/htm/preact/standalone.module.js',
+  'xterm.js': 'node_modules/@xterm/xterm/lib/xterm.js',
+  'xterm.css': 'node_modules/@xterm/xterm/css/xterm.css',
+  'addon-fit.js': 'node_modules/@xterm/addon-fit/lib/addon-fit.js',
+  'addon-webgl.js': 'node_modules/@xterm/addon-webgl/lib/addon-webgl.js',
+  'addon-unicode-graphemes.js': 'node_modules/@xterm/addon-unicode-graphemes/lib/addon-unicode-graphemes.js',
+  'addon-web-links.js': 'node_modules/@xterm/addon-web-links/lib/addon-web-links.js',
+  'addon-clipboard.js': 'node_modules/@xterm/addon-clipboard/lib/addon-clipboard.js',
+  'geist-mono.woff2': 'node_modules/@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2',
+  'geist-mono-ext.woff2': 'node_modules/@fontsource-variable/geist-mono/files/geist-mono-latin-ext-wght-normal.woff2',
+};
+
+const TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.woff2': 'font/woff2',
+  '.webmanifest': 'application/manifest+json',
+};
+
+class HttpError extends Error {
+  status: number;
+  hint?: string;
+  constructor(status: number, message: string, hint?: string) {
+    super(message);
+    this.status = status;
+    this.hint = hint;
+  }
+}
+
+// Anything that can run commands must come from this page, not from another site open in the browser.
+const sameOrigin = (req: IncomingMessage) => !req.headers.origin || new URL(req.headers.origin).host === req.headers.host;
+
+async function body(req: IncomingMessage) {
+  let raw = '';
+  for await (const chunk of req) raw += chunk;
+  return raw ? JSON.parse(raw) : {};
+}
+
+const UPLOADS = join(STATE_ROOT, 'uploads');
+const MAX_UPLOAD = 200 * 2 ** 20;
+
+// Each upload gets its own folder so the file keeps its name; folders older than a week are cleared out.
+async function saveUpload(req: IncomingMessage, raw: string) {
+  const name = basename(raw).replace(/[\0/]/g, '').slice(0, 120) || 'file';
+  for (const d of existsSync(UPLOADS) ? readdirSync(UPLOADS) : [])
+    if (Date.now() - statSync(join(UPLOADS, d)).mtimeMs > 7 * 86400_000) rmSync(join(UPLOADS, d), { recursive: true, force: true });
+  const dir = join(UPLOADS, String(Date.now()));
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, name);
+  let size = 0;
+  const out = createWriteStream(path);
+  try {
+    for await (const chunk of req) {
+      size += chunk.length;
+      if (size > MAX_UPLOAD) throw new HttpError(413, 'file is over 200 MB');
+      if (!out.write(chunk)) await new Promise((r) => out.once('drain', r));
+    }
+  } catch (e) {
+    out.destroy();
+    rmSync(dir, { recursive: true, force: true });
+    throw e;
+  }
+  await new Promise((r) => out.end(r));
+  return path;
+}
+
+const send = (res: ServerResponse, status: number, data: unknown) => {
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(data));
+};
+
+function serveFile(res: ServerResponse, file: string) {
+  if (!existsSync(file) || !statSync(file).isFile()) return send(res, 404, { error: 'not found' });
+  res.writeHead(200, { 'Content-Type': TYPES[extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+  res.end(readFileSync(file));
+}
+
+function folderArg(raw: unknown) {
+  const path = expandHome(String(raw || ''));
+  if (!path || !existsSync(path) || !statSync(path).isDirectory()) throw new HttpError(400, `not a folder: ${path}`);
+  return path;
+}
+
+// The env status is polled; which repo a folder is (two git calls) is remembered for 30 s there.
+const repoSeen = new Map<string, { at: number; value: Awaited<ReturnType<typeof repoAt>> }>();
+async function repoAtCached(path: string) {
+  const c = repoSeen.get(path);
+  if (c && Date.now() - c.at < 30_000) return c.value;
+  const value = await repoAt(path);
+  repoSeen.set(path, { at: Date.now(), value });
+  return value;
+}
+
+async function tooljetAt(raw: unknown) {
+  const repo = await repoAt(folderArg(raw));
+  if (!repo?.tooljet) throw new HttpError(400, 'not a ToolJet checkout');
+  return repo;
+}
+
+// Set up and/or start a ToolJet checkout as one job; start sets up first when needed.
+async function envJob(path: string, want: { setup?: boolean; start?: boolean }) {
+  const repo = await tooljetAt(path);
+  if (want.start) {
+    const ready = (await envStatus(repo)).ready;
+    if (ready) return startJob(repo.root, 'Start servers', START_STEPS, (ctx) => start(ctx, repo));
+    return startJob(repo.root, 'Set up & start', SETUP_START_STEPS, async (ctx) => {
+      await setup(ctx, repo);
+      await start(ctx, repo);
+    });
+  }
+  return startJob(repo.root, 'Set up dev environment', SETUP_STEPS, (ctx) => setup(ctx, repo));
+}
+
+// Sessions, each one terminal (any with several are split up first, one split at a time: every open
+// browser polls this, and two splitting the same session at once would fight over its windows).
+let splitting: Promise<boolean> | undefined;
+async function sessionList() {
+  const list = await listSessions();
+  if (!list.some((s) => s.tabs.length > 1)) return list;
+  splitting ??= oneTerminalEach(list).finally(() => (splitting = undefined));
+  await splitting;
+  return listSessions();
+}
+
+async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
+  const parts = url.pathname.split('/').slice(2).map(decodeURIComponent); // after /api/
+  // ids only follow these collection names: /sessions/<name>/tabs, /tabs/<id>, /jobs/<id>
+  const route = `${req.method} /${parts.map((p, i) => (i % 2 && ['sessions', 'tabs', 'jobs', 'groups'].includes(parts[i - 1]) ? ':' : p)).join('/')}`;
+  const q = (k: string) => url.searchParams.get(k) || '';
+  const settings = loadSettings();
+
+  switch (route) {
+    // ----- sessions & tabs -----
+    case 'GET /sessions':
+      return send(res, 200, await withAgents(await sessionList()));
+
+    case 'GET /projects': {
+      const sessions = await withAgents(await sessionList());
+      return send(res, 200, { ...(await projects(settings.roots, sessions)), folders: folders(sessions) });
+    }
+
+    case 'POST /sessions': {
+      const b = await body(req);
+      let path: string;
+      let branch = '';
+      if (b.worktree) {
+        const repo = await repoAt(folderArg(b.worktree.repo));
+        if (!repo) throw new HttpError(400, 'not a git repository');
+        branch = String(b.worktree.branch || '').trim();
+        if (!branch || (await capture('git', ['check-ref-format', '--branch', branch], { cwd: repo.main })).code !== 0) throw new HttpError(400, `not a valid branch name: "${branch}"`);
+        const wt = await addWorktree(repo.main, branch, String(b.worktree.base || '') || undefined, () => {});
+        path = wt.path;
+        forgetStats(path); // a list refresh during checkout saw a half-written tree
+        updateState(path, { branch, ...(wt.base ? { base: wt.base } : {}) });
+      } else path = real(folderArg(b.path || homedir()));
+
+      // sessions are independent: any number can share a folder
+      const existing = new Set((await listSessions()).map((s) => s.name));
+      const base = safeName(String(b.name || '')) || safeName(branch.split('/').pop() || '') || (path === homedir() ? 'terminal' : safeName(path.split('/').pop() || '')) || 'session';
+      let name = base;
+      for (let i = 2; existing.has(name); i++) name = `${base}-${i}`;
+      const folder = cleanFolder(b.folder);
+      if (folder) addFolder(folder);
+      await createSession(name, path, folder);
+
+      let jobId: string | undefined;
+      if ((b.setup || b.start) && (await repoAt(path))?.tooljet) jobId = (await envJob(path, { setup: !!b.setup, start: !!b.start })).id;
+      return send(res, 201, { name, path, jobId });
+    }
+
+    case 'PATCH /sessions/:': {
+      const to = safeName(String((await body(req)).name || ''));
+      if (!to) throw new HttpError(400, 'name needed (letters, digits, - and _)');
+      if ((await listSessions()).some((s) => s.name === to)) throw new HttpError(409, `a session called "${to}" already exists`);
+      await renameSession(parts[1], to);
+      return send(res, 200, { name: to });
+    }
+
+    // run a session in another folder or worktree (see moveSession)
+    case 'PUT /sessions/:/path': {
+      const path = real(folderArg((await body(req)).path));
+      const s = (await listSessions()).find((x) => x.name === parts[1]);
+      if (!s) throw new HttpError(404, 'no such session');
+      const moved = s.path === path || (await moveSession(s, path));
+      return send(res, 200, { path, moved });
+    }
+
+    // move a session into a folder ('' = top level); `order` is that folder's sessions in their new order
+    case 'PUT /sessions/:/place': {
+      const b = await body(req);
+      const folder = cleanFolder(b.folder);
+      const names = new Set((await listSessions()).map((s) => s.name));
+      if (!names.has(parts[1])) throw new HttpError(404, 'no such session');
+      if (folder) addFolder(folder);
+      await setFolder(parts[1], folder);
+      if (Array.isArray(b.order)) await orderSessions(b.order.map(String).filter((n: string) => names.has(n)));
+      return send(res, 200, { ok: true });
+    }
+
+    // ----- sidebar folders -----
+    case 'POST /groups': {
+      const name = cleanFolder((await body(req)).name);
+      if (!name) throw new HttpError(400, 'folder name needed');
+      addFolder(name);
+      return send(res, 201, { name });
+    }
+
+    case 'PUT /groups':
+      orderFolders((await body(req)).names || []);
+      return send(res, 200, { ok: true });
+
+    case 'PATCH /groups/:': {
+      const to = cleanFolder((await body(req)).name);
+      if (!to) throw new HttpError(400, 'folder name needed');
+      await renameFolder(parts[1], to).catch((e) => { throw new HttpError(409, e.message); });
+      return send(res, 200, { name: to });
+    }
+
+    // deleting a folder ends the sessions in it (their terminals close; servers keep running)
+    case 'DELETE /groups/:':
+      for (const s of await listSessions()) if (s.folder === parts[1]) await killSession(s.name, `folder "${parts[1]}" deleted`);
+      await removeFolder(parts[1]);
+      return send(res, 200, { ok: true });
+
+    case 'DELETE /sessions/:':
+      await killSession(parts[1], `ended from ${req.headers['user-agent']?.includes('Mobile') ? 'the phone' : 'the browser'}`);
+      return send(res, 200, { ok: true });
+
+    case 'POST /tabs/:/reply': {
+      if (!/^@\d+$/.test(parts[1])) throw new HttpError(400, 'bad tab id');
+      const key = String((await body(req)).key || '');
+      if (!/^(\d|Escape)$/.test(key)) throw new HttpError(400, 'reply with an option number or Escape');
+      await reply(parts[1], key);
+      return send(res, 200, { ok: true });
+    }
+
+    // A file dropped or pasted on a terminal: saved on the Mac, and the terminal gets its path.
+    case 'POST /upload':
+      return send(res, 200, { path: await saveUpload(req, q('name')) });
+
+    case 'GET /host':
+      return send(res, 200, await hostStats());
+
+    case 'GET /folders':
+      return send(res, 200, await openable(settings.roots));
+
+    // a folder's subfolders, to pick any folder for a session (hidden ones and node_modules left out)
+    case 'GET /dirs': {
+      const path = real(folderArg(q('path') || homedir()));
+      let entries;
+      try {
+        entries = readdirSync(path, { withFileTypes: true });
+      } catch (e) {
+        throw new HttpError(400, `can't open ${path}: ${(e as NodeJS.ErrnoException).code ?? e}`);
+      }
+      const isDir = (name: string) => statSync(join(path, name), { throwIfNoEntry: false })?.isDirectory() ?? false;
+      const dirs = entries
+        .filter((d) => !d.name.startsWith('.') && d.name !== 'node_modules' && (d.isDirectory() || (d.isSymbolicLink() && isDir(d.name))))
+        .map((d) => ({ name: d.name, path: join(path, d.name), git: existsSync(join(path, d.name, '.git')) }))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+        .slice(0, 1000);
+      return send(res, 200, { path, parent: dirname(path) === path ? null : dirname(path), dirs });
+    }
+
+    case 'GET /repos': {
+      const { repos } = await discover(settings.roots);
+      return send(res, 200, await Promise.all(repos.map(async (path) => ({ path, name: path.split('/').pop(), tooljet: !!(await repoAt(path))?.tooljet }))));
+    }
+
+    case 'GET /branches':
+      return send(res, 200, await recentBranches(folderArg(q('path'))));
+
+    // ----- dev environment -----
+    case 'GET /env': {
+      const repo = await repoAtCached(folderArg(q('path')));
+      if (!repo?.tooljet) return send(res, 200, { tooljet: false });
+      return send(res, 200, await envStatus(repo));
+    }
+
+    case 'GET /env/details':
+      return send(res, 200, await envDetails(await tooljetAt(q('path'))));
+
+    case 'POST /env/setup': {
+      const b = await body(req);
+      return send(res, 202, await envJob(b.path, { setup: true, start: !!b.start }));
+    }
+
+    case 'POST /env/start':
+      return send(res, 202, await envJob((await body(req)).path, { start: true }));
+
+    case 'POST /env/stop': {
+      const repo = await tooljetAt((await body(req)).path);
+      return send(res, 202, startJob(repo.root, 'Stop servers', STOP_STEPS, (ctx) => stop(ctx, repo)));
+    }
+
+    case 'POST /env/restart': {
+      const repo = await tooljetAt((await body(req)).path);
+      return send(res, 202, startJob(repo.root, 'Restart servers', [...STOP_STEPS.map(([id, l]): [string, string] => [`stop-${id}`, l]), ...START_STEPS], async (ctx) => {
+        await stop({ ...ctx, step: (id, fn) => ctx.step(`stop-${id}`, fn), detail: (id, d) => ctx.detail(`stop-${id}`, d) }, repo);
+        await start(ctx, repo);
+      }));
+    }
+
+    case 'POST /env/license': {
+      const repo = await tooljetAt((await body(req)).path);
+      if (!settings.license) throw new HttpError(400, 'no license key in Settings');
+      if (!isConfigured(repo) || !(await listening(ports(repo.root).server))) throw new HttpError(400, 'start the server first');
+      return send(res, 202, startJob(repo.root, 'Apply license', [['license', 'Apply license']], (ctx) => ctx.step('license', () => applyLicense(ctx, repo, settings.license))));
+    }
+
+    case 'GET /env/log': {
+      const repo = await tooljetAt(q('path'));
+      const name = ['server', 'frontend', 'setup'].includes(q('name')) ? q('name') : 'server';
+      // servers started by tj log under the worktree's .tj/logs
+      const own = logFile(repo.root, name);
+      const tjLog = join(repo.root, '.tj', 'logs', `${name}.log`);
+      const runs = pastRuns(repo.root, name);
+      const run = runs.find((r) => r.id === q('run'));
+      const file = run ? logFile(repo.root, `${name}.${run.id}`) : existsSync(own) || !existsSync(tjLog) ? own : tjLog;
+      const updated = existsSync(file) ? statSync(file).mtimeMs : 0;
+      return send(res, 200, { name, file, updated, runs, text: stripAnsi(tail(file, Math.min(Number(q('lines')) || 200, 2000))) });
+    }
+
+    case 'POST /worktrees/remove': {
+      const b = await body(req);
+      const repo = await repoAt(folderArg(b.path));
+      if (!repo?.isWorktree) throw new HttpError(400, 'not a worktree (the main checkout is never removed)');
+      const job = startJob(repo.root, 'Remove worktree', REMOVE_STEPS, async (ctx) => {
+        await removeWorktree(ctx, repo, !!b.discard);
+        for (const s of await listSessions()) if (s.path === repo.root || s.path.startsWith(repo.root + '/')) await killSession(s.name, `worktree ${repo.root} removed`);
+      });
+      return send(res, 202, job);
+    }
+
+    case 'GET /jobs/:': {
+      const job = getJob(parts[1]);
+      if (!job) throw new HttpError(404, 'no such job');
+      return send(res, 200, job);
+    }
+
+    // ----- diff, workspace, tools -----
+    case 'GET /diff': {
+      const repo = await repoAt(folderArg(q('path')));
+      if (!repo) throw new HttpError(400, 'not a git checkout');
+      refreshStats(repo.root);
+      return send(res, 200, await diff(repo.root, q('mode') === 'branch' ? 'branch' : 'uncommitted', q('base') || undefined));
+    }
+
+    case 'GET /pr': {
+      const repo = await repoAt(folderArg(q('path')));
+      if (!repo) throw new HttpError(400, 'not a git folder');
+      const head = (await capture('git', ['rev-parse', 'HEAD'], { cwd: repo.root })).out;
+      return send(res, 200, { pr: await freshPr(real(repo.main), repo.branch, head) });
+    }
+
+    case 'GET /tools':
+      return send(res, 200, await tools());
+
+    // ----- editors -----
+    case 'POST /open/vscode': {
+      const path = folderArg((await body(req)).path);
+      const r = await capture('code', [path], { cwd: path, env: cleanEnv() });
+      if (r.code !== 0) throw new HttpError(400, 'VS Code CLI not found', 'in VS Code: Command Palette → "Shell Command: Install code command in PATH"');
+      return send(res, 200, { ok: true });
+    }
+
+    case 'GET /code':
+      return send(res, 200, await codeStatus());
+
+    case 'POST /code/theme':
+      setCodeTheme(!!(await body(req)).dark);
+      return send(res, 200, { ok: true });
+
+    case 'POST /code/start':
+      return send(res, 200, await startCodeServer());
+
+    case 'POST /code/install': {
+      const s = await codeStatus();
+      if (s.installed) return send(res, 200, s);
+      if (!s.brew) throw new HttpError(400, 'Homebrew not found', 'install code-server yourself: https://coder.com/docs/code-server/install');
+      return send(res, 202, startJob('code-server', 'Install code-server', [['install', 'brew install code-server']], (ctx) =>
+        ctx.step('install', () => run('brew install code-server', 'brew', ['install', 'code-server'], { cwd: homedir(), env: cleanEnv(), log: logFile('code-server', 'install'), onLine: ctx.log })),
+      ));
+    }
+
+    // ----- tailscale & settings -----
+    case 'GET /tailscale':
+      return send(res, 200, await tailscaleStatus(PORT));
+
+    case 'POST /tailscale/share':
+      return send(res, 200, await shareOnTailnet(PORT));
+
+    case 'GET /settings':
+      return send(res, 200, { ...settings, license: settings.license ? `••••${settings.license.slice(-4)}` : '', rootsReport: (await discover(settings.roots)).report });
+
+    case 'PUT /settings': {
+      const next = await body(req);
+      saveSettings({
+        roots: Array.isArray(next.roots) ? next.roots.map(String).filter(Boolean) : settings.roots,
+        // the masked value comes back unchanged when the user didn't touch the field
+        license: typeof next.license === 'string' && !next.license.startsWith('••••') ? next.license.trim() : settings.license,
+        login: { ...settings.login, ...(next.login ?? {}) },
+      });
+      return send(res, 200, { ok: true });
+    }
+  }
+  throw new HttpError(404, `no route ${route}`);
+}
+
+const server = createServer(async (req, res) => {
+  const url = new URL(req.url || '/', 'http://x');
+  try {
+    if (url.pathname.startsWith('/api/')) {
+      if (req.method !== 'GET' && !sameOrigin(req)) throw new HttpError(403, 'cross-origin request refused');
+      return await api(req, res, url);
+    }
+    if (url.pathname === '/code' || url.pathname.startsWith('/code/')) {
+      if (!sameOrigin(req)) throw new HttpError(403, 'cross-origin request refused');
+      if (url.pathname === '/code') return res.writeHead(302, { Location: '/code/' + url.search }).end();
+      return proxyHttp(req, res);
+    }
+    if (url.pathname.startsWith('/vendor/')) {
+      const v = VENDOR[url.pathname.slice('/vendor/'.length)];
+      return v ? serveFile(res, join(ROOT, v)) : send(res, 404, { error: 'not found' });
+    }
+    const file = normalize(join(PUBLIC, url.pathname === '/' ? 'index.html' : url.pathname));
+    if (!file.startsWith(PUBLIC)) throw new HttpError(403, 'forbidden');
+    return serveFile(res, file);
+  } catch (e) {
+    const status = e instanceof HttpError ? e.status : e instanceof CmdError ? 400 : e instanceof SyntaxError ? 400 : 500;
+    const hint = e instanceof HttpError || e instanceof CmdError ? e.hint : undefined;
+    if (!res.headersSent) send(res, status, { error: e instanceof Error ? e.message : String(e), hint });
+  }
+});
+
+// One WebSocket = one terminal view. It attaches a throwaway viewer session grouped with the real one,
+// so the phone and the laptop can look at different tabs of the same session at once.
+const wss = new WebSocketServer({ noServer: true });
+
+server.on('upgrade', (req, socket, head) => {
+  const url = new URL(req.url || '/', 'http://x');
+  if (!sameOrigin(req)) return socket.destroy();
+  if (url.pathname.startsWith('/code/')) return proxyUpgrade(req, socket, head);
+  if (url.pathname !== '/ws') return socket.destroy();
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, url));
+});
+
+// Input comes numbered per browser terminal ({ id, seq }) and is confirmed with a binary frame (terminal output is
+// text); a piece re-sent after a reconnect is written only once.
+const written = new Map<string, number>();
+
+wss.on('connection', async (ws, url: URL) => {
+  // listen at once: what's typed while the session is looked up (a reconnecting phone flushes its queue right away)
+  // would otherwise be lost; it's handled once the terminal is up
+  const early: unknown[] = [];
+  let onMessage = (raw: unknown) => void early.push(raw);
+  ws.on('message', (raw) => onMessage(raw));
+  const session = url.searchParams.get('session') || '';
+  const index = url.searchParams.get('window') || '';
+  const cols = Number(url.searchParams.get('cols')) || 80;
+  const rows = Number(url.searchParams.get('rows')) || 24;
+  if (!(await listSessions()).some((s) => s.name === session)) return ws.close(4404, 'no such session');
+
+  const viewer = `${session}${VIEWER_SEP}${Math.random().toString(36).slice(2, 8)}`;
+  const args = ['new-session', '-t', session, '-s', viewer, ';', 'set-option', 'destroy-unattached', 'on'];
+  if (/^\d+$/.test(index)) args.push(';', 'select-window', '-t', `${viewer}:${index}`);
+  const term = pty.spawn('tmux', tmuxArgs(...args), { name: 'xterm-256color', cols, rows, cwd: homedir(), env: cleanEnv() });
+
+  term.onData((d) => ws.readyState === ws.OPEN && ws.send(d));
+  term.onExit(() => ws.close());
+
+  // Touch scrolling, by the line (n > 0 = towards now): tmux's history through copy mode, which a scroll back to the
+  // bottom leaves. A full-screen app that takes the mouse (Claude's, less) gets wheel reports instead, one per 3 lines,
+  // the way tmux passes a mouse wheel on. One at a time; lines that arrive meanwhile are merged.
+  let lines = 0;
+  let wheelRest = 0;
+  let at = '1;1';
+  let scrolling = Promise.resolve();
+  const scroll = async () => {
+    const n = lines;
+    lines = 0;
+    if (!n) return;
+    const [alt, mouse, inMode] = (await tmux('display-message', '-p', '-t', viewer, '#{alternate_on} #{mouse_any_flag} #{pane_in_mode}')).trim().split(' ');
+    if (inMode !== '1' && (alt === '1' || mouse === '1')) {
+      wheelRest += n;
+      const k = Math.trunc(wheelRest / 3);
+      wheelRest -= k * 3;
+      if (k) term.write(`\x1b[<${k > 0 ? 65 : 64};${at}M`.repeat(Math.abs(k)));
+    } else if (n < 0) await tmux('copy-mode', '-e', '-t', viewer, ';', 'send-keys', '-X', '-t', viewer, '-N', String(-n), 'scroll-up');
+    else if (inMode === '1') await tmux('send-keys', '-X', '-t', viewer, '-N', String(n), 'scroll-down');
+  };
+  ws.on('close', () => term.kill());
+  onMessage = (raw) => {
+    let m;
+    try {
+      m = JSON.parse(String(raw));
+    } catch {
+      return;
+    }
+    if (m.t === 'i') {
+      const id = typeof m.id === 'string' ? m.id.slice(0, 40) : '';
+      const seq = Number(m.seq) || 0;
+      if (!id || seq > (written.get(id) ?? 0)) {
+        if (m.d) term.write(String(m.d));
+        if (id) {
+          written.delete(id); // keep the map in recently-used order, and small
+          written.set(id, seq);
+          if (written.size > 500) written.delete(written.keys().next().value!);
+        }
+      }
+      if (id) ws.send(Buffer.from(JSON.stringify({ ack: seq })));
+    }
+    else if (m.t === 'r') term.resize(Math.max(2, Number(m.c) || 80), Math.max(2, Number(m.r) || 24));
+    else if (m.t === 'w') tmux('select-window', '-t', `${viewer}:${Number(m.w)}`).catch(() => {});
+    else if (m.t === 's') {
+      lines += Math.max(-500, Math.min(500, Math.trunc(Number(m.n)) || 0));
+      at = `${Math.max(1, Math.trunc(Number(m.x)) || 1)};${Math.max(1, Math.trunc(Number(m.y)) || 1)}`;
+      scrolling = scrolling.then(scroll).catch(() => {});
+    }
+  };
+  early.splice(0).forEach(onMessage);
+});
+
+await scrubServerEnv();
+server.listen(PORT, HOST, () => {
+  console.log(`devdeck on http://${HOST}:${PORT}`);
+  if (HOST === '127.0.0.1') console.log(`phone: tailscale serve --bg --https=8444 http://localhost:${PORT}`);
+});

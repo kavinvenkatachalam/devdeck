@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# devdeck: runs the TypeScript source directly, no build step.
+#   devdeck            start in the background (if not running) and print the URLs
+#   devdeck stop | restart | status | logs | open
+#   devdeck run        run in the foreground
+# Stopping devdeck leaves terminals (own tmux server) and ToolJet servers (own process groups) running.
+set -e
+here=$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+state="${XDG_STATE_HOME:-$HOME/.local/state}/devdeck"
+pidfile="$state/devdeck.pid"
+log="$state/devdeck.log"
+port="${PORT:-4317}"
+url="http://127.0.0.1:$port"
+mkdir -p "$state"
+
+running() { [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; }
+up() { curl -fs -o /dev/null --max-time 2 "$url/api/settings"; }
+
+need_node() {
+  command -v node >/dev/null || { echo "devdeck needs Node 22.6+ (node not found)" >&2; exit 1; }
+  node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=6)?0:1)' ||
+    { echo "devdeck needs Node 22.6+ (found $(node -v))" >&2; exit 1; }
+}
+
+# The phone reaches devdeck through Tailscale on :8444 (never the tailnet's main URL, which HexoKit uses).
+phone_url() {
+  command -v tailscale >/dev/null || return 0
+  local host
+  host=$(tailscale status --json 2>/dev/null | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const j=JSON.parse(d);if(j.BackendState==="Running")console.log(j.Self.DNSName.replace(/\.$/,""))}catch{}})')
+  [ -n "$host" ] || return 0
+  if ! tailscale serve status 2>/dev/null | grep -q ":8444"; then
+    tailscale serve --bg --https=8444 "http://localhost:$port" >/dev/null 2>&1 || return 0
+  fi
+  echo "phone: https://$host:8444"
+}
+
+start() {
+  if running && up; then
+    echo "devdeck is running: $url"
+  else
+    need_node
+    if up; then echo "port $port is already in use by something else" >&2; exit 1; fi
+    # own session (setsid), so closing this terminal doesn't take devdeck with it
+    node -e '
+      const { spawn } = require("child_process"); const fs = require("fs");
+      const out = fs.openSync(process.argv[2], "a");
+      const p = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", process.argv[1]], { detached: true, stdio: ["ignore", out, out] });
+      fs.writeFileSync(process.argv[3], String(p.pid)); p.unref();
+    ' "$here/src/server.ts" "$log" "$pidfile"
+    for _ in $(seq 1 50); do up && break; sleep 0.2; done
+    if ! up; then echo "devdeck did not start; see $log" >&2; tail -20 "$log" >&2; exit 1; fi
+    echo "devdeck started: $url"
+  fi
+  phone_url
+}
+
+stop() {
+  if running; then
+    kill "$(cat "$pidfile")"
+    for _ in $(seq 1 25); do running || break; sleep 0.2; done
+    running && kill -9 "$(cat "$pidfile")" 2>/dev/null || true
+    echo "devdeck stopped"
+  else
+    echo "devdeck is not running"
+  fi
+  rm -f "$pidfile"
+}
+
+case "${1:-start}" in
+  start) start ;;
+  stop) stop ;;
+  restart) stop; start ;;
+  status) if running && up; then echo "running: $url (pid $(cat "$pidfile"))"; phone_url; else echo "not running"; exit 1; fi ;;
+  logs) exec tail -n 50 -f "$log" ;;
+  open) start >/dev/null; open "$url" ;;
+  run) need_node; exec node --experimental-strip-types --no-warnings "$here/src/server.ts" ;;
+  -h|--help|help) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) echo "usage: devdeck [start|stop|restart|status|logs|open|run]" >&2; exit 1 ;;
+esac
