@@ -38,7 +38,11 @@ jobs:
         run: |
           cd desktop
           npm ci --no-audit --no-fund
-          npx electron-builder --mac --publish never --config.extraMetadata.version="${{ steps.v.outputs.version }}"
+          # the app's fingerprint (git's hash of desktop/): installed apps compare it, and skip the download when it's theirs
+          hash=$(git rev-parse HEAD:desktop)
+          npx electron-builder --mac --publish never --config.extraMetadata.version="${{ steps.v.outputs.version }}" \
+            --config.mac.extendInfo.DevdeckDesktopHash="$hash"
+          echo "{\"hash\": \"$hash\"}" > release/devdeck-desktop.json
           # what `devdeck desktop install` checks before installing it
           codesign --verify --deep --strict release/mac-arm64/devdeck.app
 
@@ -47,7 +51,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes \
-            dist/devdeck-*-darwin-arm64.tar.gz desktop/release/devdeck-desktop-*-arm64.dmg
+            dist/devdeck-*-darwin-arm64.tar.gz desktop/release/devdeck-desktop-*-arm64.dmg desktop/release/devdeck-desktop.json
 
       - name: Update the Homebrew formula
         env:

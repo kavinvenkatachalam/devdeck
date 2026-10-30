@@ -15,7 +15,7 @@ import { discover, forgetStats, openable, projects, real, refreshAllStats, refre
 import { addFolder, cleanFolder, folders, isLocked, lockedFolders, lockFolder, orderFolders, removeFolder, renameFolder } from './folders.ts';
 import { refreshPr, refreshPrs } from './prs.ts';
 import { hostStats } from './host.ts';
-import { runUpdate, startUpdateChecks } from './update.ts';
+import { checkNow, runUpdate, startUpdateChecks, updateInfo } from './update.ts';
 import { addWorktree, recentBranches, repoAt, worktrees } from './repo.ts';
 import { expandHome, loadSettings, saveSettings } from './settings.ts';
 import { capture, CmdError, run, stripAnsi, tail } from './sh.ts';
@@ -351,6 +351,10 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     case 'GET /host':
       return send(res, 200, await hostStats());
 
+    case 'POST /update/check':
+      await checkNow();
+      return send(res, 200, updateInfo());
+
     case 'POST /update':
       try {
         runUpdate();
@@ -472,7 +476,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     // With a path: just that checkout (it was opened), its PR and its change count.
     case 'POST /refresh': {
       const b = await body(req);
-      if (!b.path) await Promise.all([refreshPrs(), refreshAllStats()]);
+      if (!b.path) await Promise.all([refreshPrs(), refreshAllStats(), checkNow()]);
       else {
         const repo = await repoAt(folderArg(b.path));
         if (repo) {

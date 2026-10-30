@@ -3,7 +3,7 @@ import { cpus, hostname, loadavg, totalmem, uptime } from 'node:os';
 import { capture } from './sh.ts';
 import { updateInfo, VERSION } from './update.ts';
 
-let cached: { at: number; value: unknown } | undefined;
+let cached: { at: number; value: Record<string, unknown> } | undefined;
 
 // os.freemem() on macOS leaves out cached/purgeable pages; vm_stat's active + wired + compressed is "memory used".
 async function memUsed() {
@@ -21,7 +21,7 @@ async function disk() {
 }
 
 export async function hostStats() {
-  if (cached && Date.now() - cached.at < 5000) return cached.value;
+  if (cached && Date.now() - cached.at < 5000) return { ...cached.value, update: updateInfo() };
   const value = {
     host: hostname().replace(/\.local$/, ''),
     version: VERSION,

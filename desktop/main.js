@@ -2,14 +2,14 @@
 // It runs nothing of devdeck itself: quitting it leaves devdeck, its terminals and servers running, for the browser
 // and the phone. It starts devdeck only when you click Start, and updates only when you click Restart to Update.
 const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
-const { execFile, execFileSync, spawn } = require('node:child_process');
+const { execFile, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
 const PORT = process.env.DEVDECK_PORT || '4317';
 const BASE = `http://127.0.0.1:${PORT}`;
 const REPO = 'kavinvenkatachalam/devdeck';
-const DAY = 24 * 60 * 60 * 1000;
+const HOUR = 60 * 60 * 1000;
 
 if (!app.requestSingleInstanceLock()) app.quit();
 
@@ -99,42 +99,53 @@ ipcMain.handle('retry', () => win && show());
 
 // ---------- updates ----------
 
-// Asked at launch and once a day: a newer release turns the menu's item into Restart to Update. Clicking it runs
-// `devdeck update`, which updates devdeck through Homebrew and then this app (quitting and reopening it).
+// devdeck on this Mac knows whether a newer release is out (it asks GitHub once a day, and now on Check for Updates),
+// so the menu says what its sidebar says. Restart to Update runs the same update: devdeck updates through Homebrew and
+// restarts, and this app is replaced (and reopened) only when the release brings a different app.
 let latest = null;
 let updating = false;
-const newer = (a, b) => {
-  const [x, y] = [a, b].map((v) => v.split('.').map(Number));
-  for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
-  return false;
-};
+async function local(route, method = 'GET') {
+  const r = await fetch(`${BASE}/api${route}`, { method, signal: AbortSignal.timeout(15_000) });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error || `devdeck answered ${r.status}`);
+  return body;
+}
 async function checkUpdate(tell = false) {
   try {
-    const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { signal: AbortSignal.timeout(10_000) });
-    if (!r.ok) throw new Error(r.status === 404 ? 'no release yet' : `GitHub said ${r.status}`);
-    const v = (await r.json()).tag_name.replace(/^v/, '');
-    latest = newer(v, app.getVersion()) ? v : null;
+    const u = tell ? await local('/update/check', 'POST') : (await local('/host')).update;
+    latest = u?.available ?? null;
     menu();
-    if (tell && !latest) dialog.showMessageBox({ message: `devdeck ${app.getVersion()} is the latest.` });
+    if (tell && !latest) dialog.showMessageBox({ message: 'devdeck is up to date.' });
   } catch (e) {
-    if (tell) dialog.showMessageBox({ type: 'warning', message: 'Couldn\'t check for updates.', detail: e.message });
+    if (tell) dialog.showMessageBox({ type: 'warning', message: 'Couldn\'t check for updates.', detail: (await up()) ? e.message : 'devdeck isn\'t running: start it first.' });
   }
 }
-function update() {
-  const bin = cli();
-  if (!bin) return shell.openExternal(`https://github.com/${REPO}#install`);
+async function update() {
   updating = true;
   menu();
-  const p = spawn(bin, ['update'], { env: shellEnv(), detached: true, stdio: 'ignore' });
-  p.on('exit', (code) => {
-    // still here: the app itself didn't need replacing (or the update failed)
+  const before = (await local('/host').catch(() => ({}))).version;
+  try {
+    await local('/update', 'POST');
+  } catch (e) {
     updating = false;
-    if (code === 0) latest = null;
     menu();
-    if (code) dialog.showMessageBox({ type: 'warning', message: 'The update didn\'t finish.', detail: 'Run `devdeck update` in Terminal to see why.' });
-    else if (win) win.webContents.reload();
-  });
-  p.unref();
+    return dialog.showMessageBox({ type: 'warning', message: 'Couldn\'t update.', detail: e.message });
+  }
+  // devdeck restarts onto the new version (this app may be replaced and reopened meanwhile); still here, wait for it
+  for (let i = 0; i < 120; i++) {
+    await new Promise((r) => setTimeout(r, 5000));
+    const h = await local('/host').catch(() => null);
+    if (h && h.version !== before) {
+      updating = false;
+      latest = null;
+      menu();
+      return win && show();
+    }
+    if (h && !h.update?.updating && i > 2) break; // done, and still the old version: it failed
+  }
+  updating = false;
+  menu();
+  dialog.showMessageBox({ type: 'warning', message: 'The update didn\'t finish.', detail: 'Run `devdeck update` in Terminal to see why.' });
 }
 
 // ---------- menu ----------
@@ -172,6 +183,7 @@ app.on('window-all-closed', () => {});
 app.whenReady().then(() => {
   menu();
   open();
+  // asks devdeck here (no network): it does the daily asking of GitHub
   setTimeout(checkUpdate, 10_000);
-  setInterval(checkUpdate, DAY);
+  setInterval(checkUpdate, HOUR);
 });

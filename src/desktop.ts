@@ -2,7 +2,8 @@
 // The app is installed by this command, never downloaded in a browser: macOS flags browser downloads, and an app
 // without a paid Apple signature then can't be opened without a trip to System Settings. A download made here isn't
 // flagged, so this does the checks macOS would have: the DMG's SHA-256 against the release's, and the app's own
-// signature, before it goes into /Applications.
+// signature, before it goes into /Applications. The app rarely changes when devdeck does, so each release says which
+// app it carries (a fingerprint of desktop/, in devdeck-desktop.json): the 124 MB come down only when that changed.
 //   --dmg <file>   install that DMG instead of downloading one (for testing a local build)
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -20,13 +21,15 @@ const fail = (msg: string): never => {
 };
 const run = (cmd: string, args: string[]) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
-type Release = { version: string; url: string; name: string; sha256?: string };
+type Release = { version: string; url: string; name: string; sha256?: string; app?: string };
 async function latest(): Promise<Release> {
   const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { accept: 'application/vnd.github+json' } });
   if (!r.ok) fail(`couldn't reach GitHub for the latest release (${r.status})`);
   const rel = (await r.json()) as { tag_name: string; assets: { name: string; browser_download_url: string; digest?: string }[] };
   const dmg = rel.assets.find((a) => NAME.test(a.name)) ?? fail(`release ${rel.tag_name} has no app for Apple Silicon`);
-  return { version: rel.tag_name.replace(/^v/, ''), url: dmg.browser_download_url, name: dmg.name, sha256: dmg.digest?.replace(/^sha256:/, '') };
+  const info = rel.assets.find((a) => a.name === 'devdeck-desktop.json');
+  const app = info ? ((await (await fetch(info.browser_download_url)).json()) as { hash?: string }).hash : undefined;
+  return { version: rel.tag_name.replace(/^v/, ''), url: dmg.browser_download_url, name: dmg.name, sha256: dmg.digest?.replace(/^sha256:/, ''), app };
 }
 
 function installed() {
@@ -37,6 +40,15 @@ function installed() {
     return 'unknown';
   }
 }
+// the fingerprint of desktop/ the installed app was built from (none in apps from before it was recorded)
+function installedHash() {
+  try {
+    return run('plutil', ['-extract', 'DevdeckDesktopHash', 'raw', join(APP, 'Contents', 'Info.plist')]);
+  } catch {
+    return undefined;
+  }
+}
+const unchanged = (rel: Release) => !!rel.app && installedHash() === rel.app;
 const running = () => spawnSync('pgrep', ['-f', `${APP}/Contents/MacOS/`]).status === 0;
 
 // downloaded with its SHA-256 worked out on the way, then compared with the release's
@@ -66,8 +78,8 @@ async function quit() {
 async function install(force: boolean, dmgArg?: string) {
   const have = installed();
   const rel = dmgArg ? undefined : await latest();
-  if (rel && have === rel.version && !force) {
-    console.log(`devdeck app ${have} is the latest`);
+  if (rel && !force && (have === rel.version || unchanged(rel))) {
+    console.log(have === rel.version ? `devdeck app ${have} is the latest` : `devdeck app ${have} is the same as ${rel.version}'s: nothing to download`);
     if (process.argv.includes('--open')) spawnSync('open', [APP]);
     return;
   }
@@ -119,7 +131,7 @@ async function main() {
       const rel = await latest().catch(() => undefined);
       console.log(`installed: ${have ?? 'no'}${have && running() ? ' (open)' : ''}`);
       console.log(`latest:    ${rel?.version ?? 'unknown (no release yet, or offline)'}`);
-      if (have && rel && have !== rel.version) console.log('update:    devdeck desktop update');
+      if (have && rel && have !== rel.version) console.log(unchanged(rel) ? `update:    not needed (${rel.version} has the same app)` : 'update:    devdeck desktop update');
       return;
     }
     case 'uninstall':
