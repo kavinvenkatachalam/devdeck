@@ -46,7 +46,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --title "devdeck ${{ steps.v.outputs.version }}" --generate-notes \
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes \
             dist/devdeck-*-darwin-arm64.tar.gz desktop/release/devdeck-desktop-*-arm64.dmg
 
       - name: Update the Homebrew formula
