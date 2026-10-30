@@ -1,0 +1,16 @@
+{
+  "name": "devdeck-desktop",
+  "productName": "devdeck",
+  "private": true,
+  "version": "0.0.0",
+  "description": "The devdeck app: a window onto devdeck",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac --publish never"
+  },
+  "devDependencies": {
+    "electron": "44.7.2",
+    "electron-builder": "26.17.0"
+  }
+}

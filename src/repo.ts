@@ -30,6 +30,10 @@ export function slugHash(branch: string) {
   return `${slug}_${hash}`;
 }
 
+// What a checkout's DB names derive from: its branch, or for a detached HEAD its folder (the same name for every
+// detached worktree would have them share one database, and removing one would drop the other's).
+export const dbKey = (repo: Pick<Repo, 'branch' | 'root'>) => repo.branch || `detached-${basename(repo.root)}`;
+
 export function dbNames(branch: string) {
   const id = slugHash(branch);
   return { dev: `tooljet_${id}`, tjdbDev: `tooljet_db_${id}` };
@@ -84,7 +88,7 @@ export async function addWorktree(main: string, branch: string, base: string | u
   const existing = (await worktrees(main)).find((w) => w.branch === branch);
   if (existing) {
     log(`worktree for ${branch} already exists: ${existing.path}`);
-    return { path: existing.path, base: undefined };
+    return { path: existing.path, base: undefined, existed: true };
   }
   const path = worktreeDir(main, branch);
   await capture('git', ['fetch', '-q', 'origin', branch], { cwd: main }); // may not exist remotely

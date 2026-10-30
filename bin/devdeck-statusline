@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Claude Code status line for devdeck's usage card (Connect, on the Overview, puts it in a Claude config's statusLine):
+#   devdeck-statusline <dir> <config>      (Claude passes the status JSON on stdin)
+# Saves that JSON (its rate_limits are the account's 5-hour and weekly usage) to <dir>/<config>.json, then runs the
+# status line the config had before with the same input, so it shows exactly as it did (none before: a short one of
+# its own). Never fails Claude.
+dir=$1
+key=$2
+input=$(cat) # read it all, so Claude never writes into a closed pipe
+mkdir -p "$dir" 2>/dev/null
+printf '%s' "$input" > "$dir/$key.json.$$" 2>/dev/null && mv -f "$dir/$key.json.$$" "$dir/$key.json" 2>/dev/null
+prev="$dir/$key.statusline"
+if [ -s "$prev" ]; then
+  printf '%s' "$input" | sh -c "$(cat "$prev")"
+else
+  # there was none: a short one of its own, model · 5-hour and weekly usage
+  line=
+  [[ $input =~ \"display_name\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]] && line=${BASH_REMATCH[1]}
+  [[ $input =~ \"five_hour\"[^}]*\"used_percentage\"[[:space:]]*:[[:space:]]*([0-9]+) ]] && line+="${line:+ · }5h ${BASH_REMATCH[1]}%"
+  [[ $input =~ \"seven_day\"[^}]*\"used_percentage\"[[:space:]]*:[[:space:]]*([0-9]+) ]] && line+="${line:+ · }week ${BASH_REMATCH[1]}%"
+  printf '%s' "$line"
+fi
+exit 0

@@ -1,10 +1,8 @@
 // Mac health for the status bar: CPU load, memory in use (as Activity Monitor counts it), disk.
 import { cpus, hostname, loadavg, totalmem, uptime } from 'node:os';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { capture } from './sh.ts';
+import { updateInfo, VERSION } from './update.ts';
 
-const VERSION = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')).version as string;
 let cached: { at: number; value: unknown } | undefined;
 
 // os.freemem() on macOS leaves out cached/purgeable pages; vm_stat's active + wired + compressed is "memory used".
@@ -34,5 +32,5 @@ export async function hostStats() {
     uptime: Math.round(uptime()),
   };
   cached = { at: Date.now(), value };
-  return value;
+  return { ...value, update: updateInfo() };
 }

@@ -4,16 +4,19 @@ import { homedir } from 'node:os';
 import { basename, dirname, extname, join, normalize } from 'node:path';
 import pty from 'node-pty';
 import { WebSocketServer } from 'ws';
+import { refuse, tailnetIdentity } from './access.ts';
+import { claudeAccounts, onUsageChange, setUsage } from './claude.ts';
 import { codeStatus, proxyHttp, proxyUpgrade, setCodeTheme, startCodeServer } from './codeserver.ts';
 import { applyLicense, envDetails, envStatus, isConfigured, ports, REMOVE_STEPS, removeWorktree, SETUP_START_STEPS, SETUP_STEPS, setup, start, START_STEPS, stop, STOP_STEPS } from './devenv.ts';
 import { diff } from './diff.ts';
 import { getJob, startJob } from './jobs.ts';
 import { listening } from './net.ts';
-import { discover, forgetStats, openable, projects, real, refreshStats } from './projects.ts';
-import { addFolder, cleanFolder, folders, orderFolders, removeFolder, renameFolder } from './folders.ts';
-import { freshPr } from './prs.ts';
+import { discover, forgetStats, openable, projects, real, refreshAllStats, refreshStats } from './projects.ts';
+import { addFolder, cleanFolder, folders, isLocked, lockedFolders, lockFolder, orderFolders, removeFolder, renameFolder } from './folders.ts';
+import { refreshPr, refreshPrs } from './prs.ts';
 import { hostStats } from './host.ts';
-import { addWorktree, recentBranches, repoAt } from './repo.ts';
+import { runUpdate, startUpdateChecks } from './update.ts';
+import { addWorktree, recentBranches, repoAt, worktrees } from './repo.ts';
 import { expandHome, loadSettings, saveSettings } from './settings.ts';
 import { capture, CmdError, run, stripAnsi, tail } from './sh.ts';
 import { logFile, pastRuns, STATE_ROOT, updateState } from './state.ts';
@@ -45,6 +48,7 @@ const TYPES: Record<string, string> = {
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml',
+  '.png': 'image/png',
   '.woff2': 'font/woff2',
   '.webmanifest': 'application/manifest+json',
 };
@@ -59,8 +63,10 @@ class HttpError extends Error {
   }
 }
 
-// Anything that can run commands must come from this page, not from another site open in the browser.
-const sameOrigin = (req: IncomingMessage) => !req.headers.origin || new URL(req.headers.origin).host === req.headers.host;
+// See access.ts. DEVDECK_HOSTS adds names to answer to (comma-separated host:port), e.g. when HOST is a LAN address.
+const EXTRA_HOSTS = (process.env.DEVDECK_HOSTS || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
+const refused = (req: IncomingMessage) =>
+  refuse({ host: req.headers.host, origin: req.headers.origin, login: String(req.headers['tailscale-user-login'] || '') }, { port: PORT, tailnet: tailnetIdentity(), extraHosts: EXTRA_HOSTS });
 
 async function body(req: IncomingMessage) {
   let raw = '';
@@ -100,9 +106,15 @@ const send = (res: ServerResponse, status: number, data: unknown) => {
   res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(data));
 };
 
-function serveFile(res: ServerResponse, file: string) {
-  if (!existsSync(file) || !statSync(file).isFile()) return send(res, 404, { error: 'not found' });
-  res.writeHead(200, { 'Content-Type': TYPES[extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+// Always checked with the Mac (no-cache), but a file that hasn't changed comes back as a 304 with no body: over a slow
+// link (the phone through a relay) opening devdeck doesn't download its scripts and fonts again.
+function serveFile(req: IncomingMessage, res: ServerResponse, file: string) {
+  const st = existsSync(file) ? statSync(file) : undefined;
+  if (!st?.isFile()) return send(res, 404, { error: 'not found' });
+  const etag = `"${st.size.toString(36)}-${Math.trunc(st.mtimeMs).toString(36)}"`;
+  const headers = { 'Content-Type': TYPES[extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache', ETag: etag };
+  if (req.headers['if-none-match'] === etag) return res.writeHead(304, headers).end();
+  res.writeHead(200, headers);
   res.end(readFileSync(file));
 }
 
@@ -153,6 +165,25 @@ async function sessionList() {
   return listSessions();
 }
 
+// Every open page asks for this every 5 s (the Mac and the phone: twice). One answer serves them all for 2 s, and
+// one that's being worked out is waited on rather than started again. Any change made through devdeck drops it.
+let shared: { roots: string; done: number; value: Promise<unknown> } | undefined;
+function projectsShared(roots: string[]) {
+  const key = JSON.stringify(roots);
+  if (shared && shared.roots === key && (!shared.done || Date.now() - shared.done < 2000)) return shared.value;
+  const mine: NonNullable<typeof shared> = {
+    roots: key,
+    done: 0,
+    value: (async () => {
+      const sessions = await withAgents(await sessionList());
+      return { ...(await projects(roots, sessions)), folders: folders(sessions), locked: lockedFolders() };
+    })(),
+  };
+  shared = mine;
+  mine.value.then(() => (mine.done = Date.now()), () => shared === mine && (shared = undefined));
+  return mine.value;
+}
+
 async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
   const parts = url.pathname.split('/').slice(2).map(decodeURIComponent); // after /api/
   // ids only follow these collection names: /sessions/<name>/tabs, /tabs/<id>, /jobs/<id>
@@ -165,10 +196,8 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     case 'GET /sessions':
       return send(res, 200, await withAgents(await sessionList()));
 
-    case 'GET /projects': {
-      const sessions = await withAgents(await sessionList());
-      return send(res, 200, { ...(await projects(settings.roots, sessions)), folders: folders(sessions) });
-    }
+    case 'GET /projects':
+      return send(res, 200, await projectsShared(settings.roots));
 
     case 'POST /sessions': {
       const b = await body(req);
@@ -179,10 +208,13 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
         if (!repo) throw new HttpError(400, 'not a git repository');
         branch = String(b.worktree.branch || '').trim();
         if (!branch || (await capture('git', ['check-ref-format', '--branch', branch], { cwd: repo.main })).code !== 0) throw new HttpError(400, `not a valid branch name: "${branch}"`);
+        // its databases: a copy of another checkout's, or that checkout's shared (none: fresh ones)
+        const from = b.worktree.db?.from ? real(folderArg(b.worktree.db.from)) : '';
+        if (from && !(await worktrees(repo.main)).some((w) => w.path === from)) throw new HttpError(400, `not a checkout of ${repo.main}: ${from}`);
         const wt = await addWorktree(repo.main, branch, String(b.worktree.base || '') || undefined, () => {});
         path = wt.path;
         forgetStats(path); // a list refresh during checkout saw a half-written tree
-        updateState(path, { branch, ...(wt.base ? { base: wt.base } : {}) });
+        updateState(path, { branch, ...(wt.base ? { base: wt.base } : {}), ...(from && !wt.existed ? { db: { from, share: !!b.worktree.db.share } } : {}) });
       } else path = real(folderArg(b.path || homedir()));
 
       // sessions are independent: any number can share a folder
@@ -247,15 +279,38 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       return send(res, 200, { name: to });
     }
 
+    case 'PUT /groups/:/lock':
+      try {
+        lockFolder(parts[1], !!(await body(req)).locked);
+      } catch (e) {
+        throw new HttpError(404, (e as Error).message);
+      }
+      shared = undefined;
+      return send(res, 200, { ok: true });
+
     // deleting a folder ends the sessions in it (their terminals close; servers keep running)
     case 'DELETE /groups/:':
+      if (isLocked(parts[1])) throw new HttpError(423, `the folder "${parts[1]}" is locked: unlock it to delete it`);
       for (const s of await listSessions()) if (s.folder === parts[1]) await killSession(s.name, `folder "${parts[1]}" deleted`);
       await removeFolder(parts[1]);
       return send(res, 200, { ok: true });
 
-    case 'DELETE /sessions/:':
+    case 'DELETE /sessions/:': {
+      const s = (await listSessions()).find((x) => x.name === parts[1]);
+      if (s && isLocked(s.folder)) throw new HttpError(423, `"${s.name}" is in the locked folder "${s.folder}": unlock it to end the session`);
       await killSession(parts[1], `ended from ${req.headers['user-agent']?.includes('Mobile') ? 'the phone' : 'the browser'}`);
       return send(res, 200, { ok: true });
+    }
+
+    // A session's text (its history and screen), to select and copy on the phone, where the terminal's canvas can't be
+    // selected. Wrapped lines are joined back, so the phone wraps them to its own width.
+    case 'GET /sessions/:/text': {
+      const s = (await listSessions()).find((x) => x.name === parts[1]);
+      if (!s?.tabs[0]) throw new HttpError(404, 'no such session');
+      const lines = Math.min(Math.max(Number(q('lines')) || 1000, 50), 5000);
+      const text = await tmux('capture-pane', '-p', '-J', '-S', String(-lines), '-t', s.tabs[0].id);
+      return send(res, 200, { text: text.replace(/\s+$/, '') });
+    }
 
     case 'POST /tabs/:/reply': {
       if (!/^@\d+$/.test(parts[1])) throw new HttpError(400, 'bad tab id');
@@ -269,8 +324,40 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     case 'POST /upload':
       return send(res, 200, { path: await saveUpload(req, q('name')) });
 
+    // Claude subscriptions' 5-hour and weekly usage, once connected to their status line (see claude.ts)
+    case 'GET /claude/usage':
+      return send(res, 200, claudeAccounts());
+
+    // the same, pushed (server-sent events): now, then whenever Claude saves new numbers
+    case 'GET /claude/usage/events': {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' });
+      const push = () => res.write(`data: ${JSON.stringify(claudeAccounts())}\n\n`);
+      push();
+      req.on('close', onUsageChange(push));
+      return;
+    }
+
+    case 'POST /claude/connect':
+    case 'POST /claude/disconnect': {
+      const account = String((await body(req)).account || '');
+      try {
+        setUsage(account, parts[1] === 'connect');
+      } catch (e) {
+        throw new HttpError(400, (e as Error).message);
+      }
+      return send(res, 200, claudeAccounts());
+    }
+
     case 'GET /host':
       return send(res, 200, await hostStats());
+
+    case 'POST /update':
+      try {
+        runUpdate();
+      } catch (e) {
+        throw new HttpError(400, (e as Error).message);
+      }
+      return send(res, 202, { ok: true });
 
     case 'GET /folders':
       return send(res, 200, await openable(settings.roots));
@@ -356,6 +443,10 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       const b = await body(req);
       const repo = await repoAt(folderArg(b.path));
       if (!repo?.isWorktree) throw new HttpError(400, 'not a worktree (the main checkout is never removed)');
+      // removing it ends the sessions in it
+      const inside = (await listSessions()).filter((s) => s.path === repo.root || s.path.startsWith(repo.root + '/'));
+      const held = inside.find((s) => isLocked(s.folder));
+      if (held) throw new HttpError(423, `"${held.name}" runs here and is in the locked folder "${held.folder}": unlock it to remove the worktree`);
       const job = startJob(repo.root, 'Remove worktree', REMOVE_STEPS, async (ctx) => {
         await removeWorktree(ctx, repo, !!b.discard);
         for (const s of await listSessions()) if (s.path === repo.root || s.path.startsWith(repo.root + '/')) await killSession(s.name, `worktree ${repo.root} removed`);
@@ -377,11 +468,19 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       return send(res, 200, await diff(repo.root, q('mode') === 'branch' ? 'branch' : 'uncommitted', q('base') || undefined));
     }
 
-    case 'GET /pr': {
-      const repo = await repoAt(folderArg(q('path')));
-      if (!repo) throw new HttpError(400, 'not a git folder');
-      const head = (await capture('git', ['rev-parse', 'HEAD'], { cwd: repo.root })).out;
-      return send(res, 200, { pr: await freshPr(real(repo.main), repo.branch, head) });
+    // ⟳ in the header: PRs from GitHub, change counts from git, then the page asks for the list again.
+    // With a path: just that checkout (it was opened), its PR and its change count.
+    case 'POST /refresh': {
+      const b = await body(req);
+      if (!b.path) await Promise.all([refreshPrs(), refreshAllStats()]);
+      else {
+        const repo = await repoAt(folderArg(b.path));
+        if (repo) {
+          refreshStats(repo.root);
+          await refreshPr(real(repo.main), repo.branch);
+        }
+      }
+      return send(res, 200, { ok: true });
     }
 
     case 'GET /tools':
@@ -424,6 +523,17 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     case 'GET /settings':
       return send(res, 200, { ...settings, license: settings.license ? `••••${settings.license.slice(-4)}` : '', rootsReport: (await discover(settings.roots)).report });
 
+    // First run, the two things devdeck needs from you: a projects folder (in Settings) that holds a repo, and gh
+    // installed and signed in to GitHub, for pull requests (optional).
+    case 'GET /setup': {
+      const { report } = await discover(settings.roots);
+      const gh = await capture('gh', ['auth', 'status', '--hostname', 'github.com'], { cwd: '/', env: cleanEnv() });
+      return send(res, 200, {
+        projects: { roots: settings.roots, repos: report.reduce((n, r) => n + (r.found ? r.repos : 0), 0) },
+        github: { installed: gh.code !== 127, signedIn: gh.code === 0 },
+      });
+    }
+
     case 'PUT /settings': {
       const next = await body(req);
       saveSettings({
@@ -441,22 +551,23 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url || '/', 'http://x');
   try {
+    const why = refused(req);
+    if (why) throw new HttpError(403, why);
     if (url.pathname.startsWith('/api/')) {
-      if (req.method !== 'GET' && !sameOrigin(req)) throw new HttpError(403, 'cross-origin request refused');
+      if (req.method !== 'GET') shared = undefined; // a change: the next list is worked out afresh
       return await api(req, res, url);
     }
     if (url.pathname === '/code' || url.pathname.startsWith('/code/')) {
-      if (!sameOrigin(req)) throw new HttpError(403, 'cross-origin request refused');
       if (url.pathname === '/code') return res.writeHead(302, { Location: '/code/' + url.search }).end();
       return proxyHttp(req, res);
     }
     if (url.pathname.startsWith('/vendor/')) {
       const v = VENDOR[url.pathname.slice('/vendor/'.length)];
-      return v ? serveFile(res, join(ROOT, v)) : send(res, 404, { error: 'not found' });
+      return v ? serveFile(req, res, join(ROOT, v)) : send(res, 404, { error: 'not found' });
     }
     const file = normalize(join(PUBLIC, url.pathname === '/' ? 'index.html' : url.pathname));
     if (!file.startsWith(PUBLIC)) throw new HttpError(403, 'forbidden');
-    return serveFile(res, file);
+    return serveFile(req, res, file);
   } catch (e) {
     const status = e instanceof HttpError ? e.status : e instanceof CmdError ? 400 : e instanceof SyntaxError ? 400 : 500;
     const hint = e instanceof HttpError || e instanceof CmdError ? e.hint : undefined;
@@ -470,7 +581,7 @@ const wss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url || '/', 'http://x');
-  if (!sameOrigin(req)) return socket.destroy();
+  if (refused(req)) return socket.destroy();
   if (url.pathname.startsWith('/code/')) return proxyUpgrade(req, socket, head);
   if (url.pathname !== '/ws') return socket.destroy();
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, url));
@@ -497,7 +608,22 @@ wss.on('connection', async (ws, url: URL) => {
   if (/^\d+$/.test(index)) args.push(';', 'select-window', '-t', `${viewer}:${index}`);
   const term = pty.spawn('tmux', tmuxArgs(...args), { name: 'xterm-256color', cols, rows, cwd: homedir(), env: cleanEnv() });
 
-  term.onData((d) => ws.readyState === ws.OPEN && ws.send(d));
+  // A slow link (a phone on mobile data) can't take output as fast as a program makes it: past 1 MB waiting to go out,
+  // the terminal is paused (the program then waits, as it would on a slow ssh) until the backlog is down to 256 KB.
+  let paused = false;
+  term.onData((d) => {
+    if (ws.readyState !== ws.OPEN) return;
+    ws.send(d);
+    if (paused || ws.bufferedAmount < 1 << 20) return;
+    paused = true;
+    term.pause();
+    const drained = setInterval(() => {
+      if (ws.readyState === ws.OPEN && ws.bufferedAmount > 1 << 18) return;
+      clearInterval(drained);
+      paused = false;
+      term.resume();
+    }, 50);
+  });
   term.onExit(() => ws.close());
 
   // Touch scrolling, by the line (n > 0 = towards now): tmux's history through copy mode, which a scroll back to the
@@ -506,7 +632,21 @@ wss.on('connection', async (ws, url: URL) => {
   let lines = 0;
   let wheelRest = 0;
   let at = '1;1';
-  let scrolling = Promise.resolve();
+  // Scrolls and input go through one queue, in the order they came. Scrolled back into the history (tmux copy mode),
+  // anything typed would be taken as copy-mode commands and never reach the program, so the first input after a
+  // scroll back (a finger drag, or a mouse wheel on the Mac) first returns to the live screen, as a terminal does.
+  let queue: Promise<unknown> = Promise.resolve();
+  const later = (fn: () => unknown) => void (queue = queue.then(fn).catch(() => {}));
+  let scrolledBack = false;
+  const MOUSE = /^\x1b\[(<|M)/; // clicks and drags select in copy mode: those stay in it
+  const type = async (d: string) => {
+    if (/\x1b\[<6[45];/.test(d)) scrolledBack = true; // wheel
+    else if (scrolledBack && !MOUSE.test(d)) {
+      scrolledBack = false;
+      if ((await tmux('display-message', '-p', '-t', viewer, '#{pane_in_mode}')).trim() === '1') await tmux('send-keys', '-X', '-t', viewer, 'cancel');
+    }
+    term.write(d);
+  };
   const scroll = async () => {
     const n = lines;
     lines = 0;
@@ -517,7 +657,10 @@ wss.on('connection', async (ws, url: URL) => {
       const k = Math.trunc(wheelRest / 3);
       wheelRest -= k * 3;
       if (k) term.write(`\x1b[<${k > 0 ? 65 : 64};${at}M`.repeat(Math.abs(k)));
-    } else if (n < 0) await tmux('copy-mode', '-e', '-t', viewer, ';', 'send-keys', '-X', '-t', viewer, '-N', String(-n), 'scroll-up');
+    } else if (n < 0) {
+      scrolledBack = true;
+      await tmux('copy-mode', '-e', '-t', viewer, ';', 'send-keys', '-X', '-t', viewer, '-N', String(-n), 'scroll-up');
+    }
     else if (inMode === '1') await tmux('send-keys', '-X', '-t', viewer, '-N', String(n), 'scroll-down');
   };
   ws.on('close', () => term.kill());
@@ -532,27 +675,31 @@ wss.on('connection', async (ws, url: URL) => {
       const id = typeof m.id === 'string' ? m.id.slice(0, 40) : '';
       const seq = Number(m.seq) || 0;
       if (!id || seq > (written.get(id) ?? 0)) {
-        if (m.d) term.write(String(m.d));
+        const d = String(m.d || '');
+        if (d) later(() => type(d));
         if (id) {
           written.delete(id); // keep the map in recently-used order, and small
           written.set(id, seq);
           if (written.size > 500) written.delete(written.keys().next().value!);
         }
       }
-      if (id) ws.send(Buffer.from(JSON.stringify({ ack: seq })));
+      // confirmed once written (after a scroll back is undone)
+      if (id) later(() => ws.readyState === ws.OPEN && ws.send(Buffer.from(JSON.stringify({ ack: seq }))));
     }
     else if (m.t === 'r') term.resize(Math.max(2, Number(m.c) || 80), Math.max(2, Number(m.r) || 24));
     else if (m.t === 'w') tmux('select-window', '-t', `${viewer}:${Number(m.w)}`).catch(() => {});
     else if (m.t === 's') {
       lines += Math.max(-500, Math.min(500, Math.trunc(Number(m.n)) || 0));
       at = `${Math.max(1, Math.trunc(Number(m.x)) || 1)};${Math.max(1, Math.trunc(Number(m.y)) || 1)}`;
-      scrolling = scrolling.then(scroll).catch(() => {});
+      later(scroll);
     }
   };
   early.splice(0).forEach(onMessage);
 });
 
 await scrubServerEnv();
+tailnetIdentity(); // ask now, so the phone isn't turned away while the first answer is pending
+startUpdateChecks();
 server.listen(PORT, HOST, () => {
   console.log(`devdeck on http://${HOST}:${PORT}`);
   if (HOST === '127.0.0.1') console.log(`phone: tailscale serve --bg --https=8444 http://localhost:${PORT}`);

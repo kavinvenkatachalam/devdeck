@@ -5,12 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0b0c10" media="(prefers-color-scheme: dark)">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="devdeck">
   <title>devdeck</title>
   <script>try { const t = JSON.parse(localStorage.getItem('devdeck.theme')); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}</script>
+  <!-- Chrome can say "installable" before the app's modules load: keep the event for them (lib.js useInstall) -->
+  <script>addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); window.ddInstall = e; dispatchEvent(new Event('dd-installable')); });</script>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="/icon.svg">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
   <link rel="stylesheet" href="/vendor/xterm.css">
   <link rel="stylesheet" href="/style.css">
   <script src="/vendor/xterm.js"></script>
@@ -23,6 +27,6 @@
 <body>
   <div id="app"></div>
   <div id="toast" class="toast" role="status" hidden></div>
-  <script type="module" src="/app.js"></script>
+  <script type="module" src="/js/app.js"></script>
 </body>
 </html>

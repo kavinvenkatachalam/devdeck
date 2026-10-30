@@ -11,6 +11,7 @@ export type State = {
   base?: string; // what the branch was created from, for the branch diff
   ports?: { server?: number; frontend?: number };
   dbs?: { dev?: string; tjdbDev?: string };
+  db?: { from: string; share: boolean }; // a new worktree's databases: copied from (or shared with) that checkout's
   deps?: Record<string, string>; // dir → package-lock hash at last install; plugins:build → plugins tree hash
   org?: { id: string; name?: string };
   licensed?: string; // last 4 chars of the key last applied

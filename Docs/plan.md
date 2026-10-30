@@ -37,8 +37,9 @@ feature a session can use, and have their own list for managing environments wit
 | One terminal per session (tabs split into sessions); split views (boards) removed | done |
 | Folder tabs above the terminal (switch, ⌘/⌃1–9, +, ✕); sessions.log | done |
 | Push notifications | later |
-| PWA polish: PNG icons, offline screen | later |
-| Auto-start at login (launchd) | later |
+| PWA: PNG + maskable icons, install button, offline page; copy text on the phone | done |
+| Auto-start at login (`devdeck autostart on`, a LaunchAgent) | done |
+| Review fixes: host / Tailscale-user check, Running = port answers, per-folder DBs for detached worktrees, Claude hooks for status, terminal backpressure and reconnect in place, shared list refresh, UI split into modules, tests | done |
 | Open the running ToolJet app from the phone | later (it binds to the Mac's localhost) |
 | Team mode: agent per Mac + shared server, auth | later |
 | Mac app (Tauri wrapper) | later; install as an app from Chrome meanwhile |
@@ -51,5 +52,6 @@ feature a session can use, and have their own list for managing environments wit
 - DB names match tj's (`tooljet_<slug>_<hash>`), so worktrees tj set up are recognised; tj's ports and run files are read too.
 - An unconfigured worktree never acts on the default ports (3000/8082 belong to the main checkout).
 - Removing a worktree only drops DBs derived from its branch, never the main checkout's.
-- Same-origin check on every write, WebSocket and /code request.
+- Every request (pages, API, WebSocket, /code) must be addressed to localhost or the Mac's Tailscale name, not come from another site, and over Tailscale come from the Mac's own Tailscale user (src/access.ts).
+- Agent status: Claude's hooks when set up, the screen otherwise; the screen always supplies prompt options (src/tmux.ts `combine`).
 - Tailscale: devdeck only ever adds :8444, never the tailnet's main URL.

@@ -3,13 +3,15 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { ports } from './devenv.ts';
+import { readEnv } from './envfile.ts';
 import { activeJob } from './jobs.ts';
 import { listening } from './net.ts';
 import { prFor } from './prs.ts';
 import { worktrees } from './repo.ts';
 import { expandHome } from './settings.ts';
 import { capture } from './sh.ts';
-import type { Session } from './tmux.ts';
+import { claudeWorkDir } from './claude.ts';
+import { moveSession, type Session } from './tmux.ts';
 
 const isDir = (p: string) => existsSync(p) && statSync(p).isDirectory();
 // macOS paths are case-insensitive; use the on-disk spelling so "~/Work/Tooljet" matches git's "ToolJet".
@@ -68,7 +70,7 @@ async function isGit(path: string) {
 
 // git status / ahead-behind are slow on big repos (~0.2 s of CPU each in ToolJet): serve the last value and
 // refresh in the background, every 30 s where you're working (a session or servers), every 10 min elsewhere.
-// Opening a worktree's changes refreshes it at once (refreshStats).
+// Opening a worktree's changes, or reload (refreshAllStats), refreshes at once.
 type Stats = { changes: number; ahead?: number; behind?: number };
 const statsCache = new Map<string, { at: number; value?: Stats; pending?: Promise<void> }>();
 
@@ -101,6 +103,15 @@ export const refreshStats = (path: string) => {
   if (c) c.at = 0;
 };
 
+// Reload: every checkout's counts worked out now, and waited for.
+export async function refreshAllStats() {
+  await Promise.all([...statsCache.keys()].map((path) => {
+    refreshStats(path);
+    stats(path, true);
+    return statsCache.get(path)?.pending;
+  }));
+}
+
 // Is this checkout's ToolJet up? Only for checkouts with their own .env (defaults belong to main).
 export async function serversUp(root: string, isWorktree: boolean) {
   const envFile = join(root, '.env');
@@ -131,6 +142,7 @@ export async function projects(roots: string[], sessions: Session[]) {
   // (worktrees live inside the main checkout's .worktrees/).
   const all = list.flatMap((p) => p.checkouts.map((c) => c.path));
   const owner = (path: string) => all.filter((c) => path === c || path.startsWith(c + '/')).sort((a, b) => b.length - a.length)[0];
+  await followAgents(sessions, owner);
   const byCheckout = new Map<string, SessionRef[]>();
   for (const s of sessions) {
     const o = owner(s.path);
@@ -161,13 +173,36 @@ export async function projects(roots: string[], sessions: Session[]) {
   return { sessions: flat, projects: out };
 }
 
-// Everything "Open folder" can offer: every checkout plus plain folders under parent roots.
+// A Claude that goes to work in another checkout (a worktree it made, say) takes its session along, as a Move would:
+// the session then shows under that worktree, with its changes, code and dev env. Only a checkout other than the one
+// it was started in counts (back there is just its shell resetting), and only when that changes, so moving the
+// session by hand sticks.
+const workedIn = new Map<string, string>(); // pane → checkout its Claude last worked in
+async function followAgents(sessions: Session[], owner: (path: string) => string | undefined) {
+  for (const s of sessions) {
+    const t = s.tabs[0];
+    if (t?.program !== 'claude') continue;
+    const dir = claudeWorkDir(t.pane);
+    const to = dir && owner(real(dir.now));
+    if (!to || to === owner(real(dir.start)) || workedIn.get(t.pane) === to) continue;
+    workedIn.set(t.pane, to);
+    if (to === owner(s.path)) continue;
+    await moveSession(s, to);
+    s.path = to;
+  }
+}
+
+// Everything "Open folder" can offer: every checkout plus plain folders under parent roots. A ToolJet checkout that's
+// set up names its database (db), which a new worktree can copy or share.
 export async function openable(roots: string[]) {
   const { repos, folders } = await discover(roots);
   const checkouts = (
     await Promise.all(
       repos.map(async (repo) =>
-        (await worktrees(repo).catch(() => [])).map((w) => ({ path: w.path, name: w.main ? basename(repo) : w.branch || basename(w.path), branch: w.branch, project: basename(repo), main: w.main, tooljet: isToolJet(w.path) })),
+        (await worktrees(repo).catch(() => [])).map((w) => ({
+          path: w.path, name: w.main ? basename(repo) : w.branch || basename(w.path), branch: w.branch, project: basename(repo), repo, main: w.main, tooljet: isToolJet(w.path),
+          db: isToolJet(w.path) ? readEnv(join(w.path, '.env')).PG_DB || undefined : undefined,
+        })),
       ),
     )
   ).flat();

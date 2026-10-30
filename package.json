@@ -6,7 +6,8 @@
   "description": "Light dev cockpit: Claude/Codex sessions per worktree, dev servers, on desktop and phone",
   "scripts": {
     "start": "bin/devdeck",
-    "check": "tsc -p ."
+    "check": "tsc -p .",
+    "test": "node --experimental-strip-types --no-warnings --test test/*.test.ts"
   },
   "dependencies": {
     "@fontsource-variable/geist-mono": "5.2.7",

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { STATE_ROOT } from './state.ts';
 import { promisify } from 'node:util';
@@ -17,7 +17,8 @@ export const VIEWER_SEP = '~';
 export type Agent = 'working' | 'waiting' | 'idle';
 // A session is one terminal: one tmux window (`tabs` always holds just that one).
 // choices: the numbered options of a prompt that needs you ("1. Yes", "3. No…"), for one-tap replies.
-export type Tab = { id: string; index: number; program: string; busy: boolean; active: boolean; agent?: Agent; choices?: string[] };
+// pane: tmux's pane id (%12), which Claude's hooks report under (see bin/devdeck-hook).
+export type Tab = { id: string; pane: string; index: number; program: string; busy: boolean; active: boolean; agent?: Agent; choices?: string[] };
 
 const SHELLS = new Set(['zsh', 'bash', 'fish', 'sh']);
 
@@ -69,7 +70,7 @@ export async function listSessions(): Promise<Session[]> {
   let s: string, w: string;
   try {
     s = await tmux('list-sessions', '-F', '#{session_name}\t#{@dd_path}\t#{session_created}\t#{@dd_folder}\t#{@dd_order}');
-    w = await tmux('list-windows', '-a', '-F', '#{session_name}\t#{window_id}\t#{window_index}\t#{pane_current_command}\t#{window_active}\t#{window_activity}\t#{pane_tty}');
+    w = await tmux('list-windows', '-a', '-F', '#{session_name}\t#{window_id}\t#{window_index}\t#{pane_current_command}\t#{window_active}\t#{window_activity}\t#{pane_tty}\t#{pane_id}');
   } catch {
     return []; // no server yet
   }
@@ -78,12 +79,12 @@ export async function listSessions(): Promise<Session[]> {
     .map(([name, path, created, folder, order]): Session => ({ name, path, created: Number(created), activity: Number(created), folder: folder || '', order: Number(order) || 0, tabs: [] }));
   const byName = new Map(sessions.map((x) => [x.name, x]));
   const ttys = new Map<string, Tab>(); // shells, whose real foreground program is looked up below
-  for (const [sess, id, index, command, active, activity, tty] of rows(w)) {
+  for (const [sess, id, index, command, active, activity, tty, pane] of rows(w)) {
     const p = program(command);
     const x = byName.get(sess);
     if (!x) continue;
     x.activity = Math.max(x.activity, Number(activity) || 0);
-    const tab: Tab = { id, index: Number(index), program: p, busy: !SHELLS.has(p), active: active === '1' };
+    const tab: Tab = { id, pane: pane || '', index: Number(index), program: p, busy: !SHELLS.has(p), active: active === '1' };
     x.tabs.push(tab);
     if (SHELLS.has(p) && tty) ttys.set(tty.replace('/dev/', ''), tab);
   }
@@ -124,11 +125,34 @@ const WORKING = /esc to interrupt|^\s*[·✢✳✶✻✽*∗]\s+\S[^\n]*…\s+\(
 // "❯ 1. Yes" / "  2. Yes, and don't ask again…" / "› 1. Yes, proceed (y)"
 const CHOICE = /^\s*(?:[❯›>]\s*)?(\d)\.\s+(.+?)\s*$/;
 
-async function agentState(windowId: string): Promise<Pick<Tab, 'agent' | 'choices'>> {
+// What Claude's hooks last said for a pane, when they're set up (`devdeck hooks`, bin/devdeck-hook).
+export const HOOKS_DIR = join(STATE_ROOT, 'agents');
+function hookState(pane: string): Agent | undefined {
   try {
-    return readAgent(await tmux('capture-pane', '-p', '-t', windowId));
+    const state = readFileSync(join(HOOKS_DIR, pane.replace(/^%/, '')), 'utf8').trim();
+    return ['working', 'waiting', 'idle'].includes(state) ? (state as Agent) : undefined;
   } catch {
-    return {};
+    return undefined; // no hooks, or not yet
+  }
+}
+
+// Hooks say for sure when a turn starts and ends, whatever Claude's screen looks like this version. They miss two
+// things the screen shows: Esc on a permission prompt (no hook: the input box is back) and Esc during a turn (Stop
+// doesn't run on an interrupt: "Interrupted" over the input box). And only the screen has a prompt's options. So:
+// a prompt on screen wins; then the hooks, unless the screen shows one of those two; with no hooks, the screen.
+export function combine(hook: Agent | undefined, screen: Screen): Pick<Tab, 'agent' | 'choices'> {
+  const seen = { agent: screen.agent, ...(screen.choices ? { choices: screen.choices } : {}) };
+  if (screen.agent === 'waiting' || !hook) return seen;
+  if (hook === 'waiting') return screen.box ? seen : { agent: 'waiting', choices: [] };
+  if (hook === 'working') return screen.box && screen.interrupted && screen.agent === 'idle' ? seen : { agent: 'working' };
+  return screen.agent === 'working' ? seen : { agent: 'idle' };
+}
+
+async function agentState(t: Tab): Promise<Pick<Tab, 'agent' | 'choices'>> {
+  try {
+    return combine(t.program === 'claude' && t.pane ? hookState(t.pane) : undefined, readScreen(await tmux('capture-pane', '-p', '-t', t.id)));
+  } catch {
+    return {}; // pane went away
   }
 }
 
@@ -138,25 +162,34 @@ async function agentState(windowId: string): Promise<Pick<Tab, 'agent' | 'choice
 const RULE = /^\s*─{10,}\s*$/;
 const INPUT = /^\s*❯(?!\s*\d\.)/; // not "❯ 1. Yes": that's a prompt's choice, not the input line
 const SPINNER = /^[·✢✳✶✻✽*∗]\s+\S.*…\s+\(/;
-function claudeBox(all: string[]): Agent | undefined {
+// interrupted: Esc stopped the last turn ("⎿  Interrupted · What should Claude do instead?" just over the box)
+function claudeBox(all: string[]): { agent: Agent; interrupted: boolean } | undefined {
   const rules = all.flatMap((l, i) => (RULE.test(l) ? [i] : []));
   for (let k = rules.length - 1; k > 0; k--) {
     const [top, end] = [rules[k - 1], rules[k]];
     if (!all.slice(top + 1, end).some((l) => INPUT.test(l))) continue;
+    const interrupted = all.slice(Math.max(0, top - 8), top).some((l) => /Interrupted/.test(l));
     for (let i = top - 1; i >= 0; i--) {
       const l = all[i];
       if (!l.trim() || /^\s/.test(l)) continue; // blank, or a tip / to-do / wrapped text under the status line
-      return SPINNER.test(l) ? 'working' : 'idle';
+      return { agent: SPINNER.test(l) ? 'working' : 'idle', interrupted };
     }
-    return 'idle';
+    return { agent: 'idle', interrupted };
   }
   return undefined;
 }
 
-export function readAgent(screen: string): Pick<Tab, 'agent' | 'choices'> {
+// What the screen says, plus whether Claude's input box is on it (then nothing is being asked).
+export type Screen = { agent: Agent; choices?: string[]; box: boolean; interrupted: boolean };
+export function readScreen(screen: string): Screen {
+  const box = claudeBox(screen.trimEnd().split('\n'));
+  return { ...readAgent(screen), box: !!box, interrupted: !!box?.interrupted };
+}
+
+export function readAgent(screen: string): { agent: Agent; choices?: string[] } {
   const all = screen.trimEnd().split('\n');
   const box = claudeBox(all);
-  if (box) return { agent: box };
+  if (box) return { agent: box.agent };
   // no input box (a prompt replaced it, or Codex): read the bottom of the screen
   const lines = all.slice(-25);
   const bottom = lines.join('\n');
@@ -172,7 +205,7 @@ export function readAgent(screen: string): Pick<Tab, 'agent' | 'choices'> {
 }
 
 export async function withAgents(sessions: Session[]) {
-  await Promise.all(sessions.flatMap((s) => s.tabs.filter((t) => AGENTS.has(t.program)).map(async (t) => Object.assign(t, await agentState(t.id)))));
+  await Promise.all(sessions.flatMap((s) => s.tabs.filter((t) => AGENTS.has(t.program)).map(async (t) => Object.assign(t, await agentState(t)))));
   return sessions;
 }
 

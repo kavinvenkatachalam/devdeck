@@ -169,6 +169,8 @@ kbd { font: 10.5px var(--font); padding: 0 5px; border-radius: 4px; background: 
 .side-body { flex: 1; overflow-y: auto; padding: 0 8px 14px; }
 .side-foot { padding: 6px 8px 10px; display: grid; gap: 1px; flex: none; }
 .nav-row { position: relative; display: flex; align-items: center; gap: 9px; height: 30px; padding: 0 8px; border-radius: var(--r); color: var(--muted); width: 100%; }
+.nav-row.update-row { color: var(--accent); font-weight: 600; }
+.nav-row.update-row:disabled { opacity: .75; cursor: default; }
 .nav-row:hover { background: var(--hover); color: var(--text); }
 .nav-row.sel { background: var(--row-sel); color: var(--sel-text); font-weight: 600; box-shadow: 0 0 0 1px var(--row-sel-ring), var(--shadow-sm); }
 .nav-n { margin-left: auto; font-size: 11px; color: var(--subtle); font-weight: 500; }
@@ -201,6 +203,36 @@ kbd { font: 10.5px var(--font); padding: 0 5px; border-radius: 4px; background: 
 .trow.sel .trow-name { font-weight: 600; color: var(--sel-text); }
 /* a short rounded bar inside the selected row (dark only: --row-sel-bar is transparent in light) */
 .trow.sel::after, .nav-row.sel::after { content: ""; position: absolute; left: 2px; top: 50%; height: 14px; margin-top: -7px; width: 3px; border-radius: 2px; background: var(--row-sel-bar); pointer-events: none; }
+/* "working" as an animation (Settings › Appearance): only transform and opacity move, so it stays cheap */
+.wk { display: inline-flex; align-items: center; justify-content: center; height: 1em; vertical-align: -0.12em; }
+.wk-dots { gap: 2px; }
+.wk-dots i { width: 3.5px; height: 3.5px; border-radius: 50%; background: currentColor; animation: wk-dot 1s ease-in-out infinite; }
+.wk-dots i:nth-child(2), .wk-bars i:nth-child(2) { animation-delay: .15s; }
+.wk-dots i:nth-child(3), .wk-bars i:nth-child(3) { animation-delay: .3s; }
+@keyframes wk-dot { 0%, 80%, 100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
+.wk-spinner { width: .95em; height: .95em; border: 1.6px solid color-mix(in srgb, currentColor 22%, transparent); border-top-color: currentColor; border-radius: 50%; animation: wk-spin .8s linear infinite; }
+@keyframes wk-spin { to { transform: rotate(360deg); } }
+.wk-sparkle::before { content: "\273B"; font-size: 1.1em; line-height: 1; display: inline-block; animation: wk-spark 1.6s ease-in-out infinite; }
+@keyframes wk-spark { 0% { transform: rotate(0) scale(.8); opacity: .6; } 50% { transform: rotate(180deg) scale(1.1); opacity: 1; } 100% { transform: rotate(360deg) scale(.8); opacity: .6; } }
+.wk-bars { gap: 1.5px; align-items: flex-end; }
+.wk-bars i { width: 2.5px; height: 100%; border-radius: 1px; background: currentColor; transform-origin: bottom; animation: wk-bar .9s ease-in-out infinite; }
+@keyframes wk-bar { 0%, 100% { transform: scaleY(.3); } 50% { transform: scaleY(1); } }
+.wk-gif { height: 1.3em; width: auto; max-width: 3.2em; object-fit: contain; vertical-align: middle; border-radius: 3px; }
+@media (prefers-reduced-motion: reduce) { .wk i, .wk::before { animation: none !important; } }
+.tt-pick { display: flex; flex-wrap: wrap; gap: 6px; }
+.tt { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 9px 0 4px; border-radius: 8px; border: 1px solid var(--border); color: var(--muted); font-size: 12px; white-space: nowrap; }
+.tt:hover { color: var(--text); border-color: var(--border-strong); }
+.tt.sel { color: var(--sel-text); background: var(--row-sel); border-color: var(--accent); }
+.tt-sw { display: inline-flex; align-items: center; gap: 2px; height: 22px; padding: 0 5px; border-radius: 5px; font: 600 11px var(--mono); box-shadow: inset 0 0 0 1px rgb(127 127 127 / .25); }
+.tt-sw i { width: 4px; height: 10px; border-radius: 1px; }
+.tt-sw i:first-of-type { margin-left: 3px; }
+.tt-match { padding: 0; overflow: hidden; }
+.tt-def { font-size: 10.5px; color: var(--subtle); margin-left: -2px; }
+.tt-match span { display: grid; place-items: center; width: 14px; height: 100%; }
+.working-dd { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.working-seg { flex-wrap: wrap; }
+.working-seg button { min-width: 44px; justify-content: center; }
+.working-seg .wk { font-size: 15px; }
 .trow-st { font-size: 11.5px; white-space: nowrap; flex: none; font-weight: 500; }
 .trow-n { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--subtle); flex: none; font-variant-numeric: tabular-nums; }
 .trow-chg { display: inline-flex; align-items: center; font-size: 11px; color: var(--subtle); flex: none; font-variant-numeric: tabular-nums; }
@@ -252,6 +284,10 @@ kbd { font: 10.5px var(--font); padding: 0 5px; border-radius: 4px; background: 
 .trow-btn:hover:not(:disabled) { background: var(--press); color: var(--text); }
 .trow-btn.x:hover { color: var(--danger); }
 .trow-btn.on { color: var(--accent); }
+/* a locked folder keeps its lock showing; the other buttons come on hover */
+.trow-btn.locked { color: var(--text); }
+.trow.fold:has(.trow-btn.locked) > .trow-act { display: inline-flex; }
+@media (min-width: 761px) { .trow.fold:not(:hover):not(:focus-within) > .trow-act > .trow-btn:not(.locked) { display: none; } }
 .trow-btn.on .i { fill: currentColor; }
 .trow.tab:has(.trow-btn.on) .trow-act { display: inline-flex; }
 .trow.tab:not(:hover) .trow-btn.x { display: none; }
@@ -289,6 +325,7 @@ body.dragging-session .trow.loose-end { display: flex; }
 .top-actions { display: flex; align-items: center; gap: 6px; flex: none; }
 .crumb { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; color: var(--accent); font-size: 12px; font-weight: 500; }
 .crumb .i { flex: none; }
+.field select + input { margin-top: 6px; }
 .seg, .lens-group { display: inline-flex; gap: 2px; padding: 2px; border-radius: 9px; background: var(--panel-2); flex: none; }
 .seg button, .lens { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 7px; color: var(--muted); font-weight: 500; white-space: nowrap; font-size: 12.5px; position: relative; }
 .seg button:hover, .lens:hover { color: var(--text); }
@@ -296,7 +333,6 @@ body.dragging-session .trow.loose-end { display: flex; }
 .lens.sel .i { color: var(--accent); }
 .lens .n { font-size: 10.5px; color: var(--muted); }
 .theme-seg button { padding: 0 7px; height: 24px; }
-.bottom-nav { display: none; }
 .pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .pane[hidden] { display: none; }
 .scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 18px 28px; }
@@ -429,6 +465,15 @@ a.pr-badge:hover { text-decoration: none; filter: brightness(.96); }
 .term-card { flex: 1; min-height: 0; padding: 10px 4px 2px 12px; background: var(--term-bg); overflow: hidden; }
 .term { touch-action: none; } /* finger drags scroll tmux's history (app.js), not the page */
 .term { height: 100%; position: relative; }
+/* phone: text selected on the terminal (terminal.js): teardrop handles at its ends and a Copy / All / ✕ bar */
+.tsel { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 5; }
+.tsel-h { position: absolute; left: 0; top: 0; width: 22px; height: 22px; background: var(--accent); touch-action: none; }
+.tsel-h::before { content: ''; position: absolute; inset: -14px; } /* a bigger target for the finger */
+.tsel-h.a { border-radius: 50% 0 50% 50%; }
+.tsel-h.b { border-radius: 0 50% 50% 50%; }
+.tsel-bar { position: absolute; left: 0; top: 0; display: flex; gap: 2px; padding: 3px; border-radius: 11px; background: var(--text); box-shadow: 0 6px 20px rgb(0 0 0 / .25); white-space: nowrap; }
+.tsel-bar button { height: 34px; padding: 0 14px; border-radius: 8px; color: var(--bg); font-weight: 650; font-size: 14px; }
+.tsel-bar button:active { background: color-mix(in srgb, var(--bg) 20%, transparent); }
 .term.dropping::after { content: 'Drop to paste the file paths'; position: absolute; inset: 0; display: grid; place-items: center; border: 2px dashed var(--accent); border-radius: 10px; background: color-mix(in srgb, var(--term-bg) 80%, transparent); color: var(--text); font-size: 14px; font-weight: 600; pointer-events: none; z-index: 5; }
 .replies { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 12px 8px; }
 .replies .btn { max-width: 340px; }
@@ -451,7 +496,7 @@ a.pr-badge:hover { text-decoration: none; filter: brightness(.96); }
 .empty-box p .i { vertical-align: -2px; }
 
 /* ---------- overview ---------- */
-.ov { display: grid; gap: 26px; max-width: 1180px; }
+.ov { display: grid; grid-template-columns: minmax(0, 1fr); gap: 26px; max-width: 1180px; } /* long PR titles shrink to … rather than widen the page */
 .ov-h { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .ov-h h2 { margin: 0; font-size: 13px; font-weight: 650; white-space: nowrap; }
 .ov-rule { flex: 1; }
@@ -468,7 +513,44 @@ a.pr-badge:hover { text-decoration: none; filter: brightness(.96); }
 .ov-row b { font-weight: 600; }
 .ov-row + .ov-row { border-top: 1px solid var(--border); }
 .ov-row:hover { background: var(--hover); }
+a.ov-row { color: inherit; text-decoration: none; }
+/* a PR that needs you: the row opens it on GitHub, the button beside it opens its worktree here */
+/* first run: Get set up (views.js SetupCard) */
+.setup { border: 1px solid var(--border); border-radius: var(--r, 10px); background: var(--panel); padding: 12px 14px; display: grid; gap: 10px; margin-bottom: 4px; }
+.setup.compact { margin: 0 12px 10px; }
+.setup-h { display: flex; align-items: center; gap: 8px; }
+.setup-row { display: flex; align-items: flex-start; gap: 10px; }
+.setup-row > .i { margin-top: 2px; color: var(--muted); flex: none; }
+.setup-row.done > .i { color: var(--ok, #16a34a); }
+.setup-row .grow { display: grid; gap: 2px; min-width: 0; }
+.setup-row .muted { font-size: 12px; }
+.setup-row.done b { color: var(--muted); }
+.setup-cmd { display: inline-flex; align-items: center; gap: 4px; margin-left: 4px; padding: 0 2px 0 6px; border-radius: 6px; background: var(--panel-2); color: var(--text); }
+.ov-pr { display: flex; align-items: center; padding-right: 6px; }
+.ov-pr .ov-row { flex: 1; min-width: 0; }
+.ov-list > * + .ov-pr, .ov-list > .ov-pr + * { border-top: 1px solid var(--border); }
 .ov-empty { margin: 0; color: var(--subtle); }
+/* Claude usage: a bar per window (5-hour, this week), amber from 70%, red from 90% */
+.cu-grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+.cu-card { gap: 8px; cursor: default; }
+.cu-age { flex: none; white-space: nowrap; }
+.cu-pitch { margin: 0; color: var(--muted); font-size: 12.5px; }
+.cu-card .row { gap: 10px; align-items: center; }
+.cu-card .cu-note { grid-column: auto; }
+.cu-w .cu-note { grid-column: 2 / -1; }
+.cu-w { display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; align-items: center; column-gap: 10px; row-gap: 2px; font-size: 12.5px; }
+.cu-l { color: var(--muted); }
+.cu-bar { height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
+.cu-bar i { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+.cu-bar i.warn { background: var(--warn); }
+.cu-bar i.bad { background: var(--danger); }
+.cu-note { color: var(--subtle); font-size: 11.5px; }
+.cu-compact { margin: 0 12px 6px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); display: grid; gap: 2px; }
+.cu-line { display: flex; align-items: center; gap: 12px; font-size: 12.5px; min-width: 0; }
+.cu-acct { flex: 1; min-width: 0; color: var(--muted); }
+.cu-n { flex: none; font-weight: 600; }
+.cu-n.warn { color: var(--warn); }
+.cu-n.bad { color: var(--danger); }
 .ov-empty .i { vertical-align: -2px; }
 
 /* ---------- worktrees ---------- */
@@ -482,6 +564,7 @@ a.pr-badge:hover { text-decoration: none; filter: brightness(.96); }
 .wt-main { flex: 1; min-width: 0; display: grid; gap: 2px; }
 .wt-t { display: flex; align-items: center; gap: 8px; font-weight: 600; min-width: 0; }
 .wt-s { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); min-width: 0; }
+.wt-s > :not(.ellipsis), .wt-t > :not(.ellipsis) { flex: none; white-space: nowrap; } /* "1 change", tags and badges keep whole; the path gives */
 .wt-sess { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; max-width: 45%; }
 
 /* ---------- diff & code ---------- */
@@ -597,6 +680,18 @@ a.pr-badge:hover { text-decoration: none; filter: brightness(.96); }
 @media (max-width: 1180px) { .hide-narrow { display: none !important; } .lens-label { display: none; } }
 
 /* ---------- phone ---------- */
+/* phone: install devdeck as an app */
+.install-banner { display: flex; align-items: center; gap: 10px; margin: 0 12px 10px; padding: 10px 6px 10px 10px; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); }
+.install-banner img { width: 36px; height: 36px; border-radius: 9px; }
+.install-banner b { display: block; font-size: 14px; }
+.install-banner span { display: block; color: var(--muted); font-size: 12.5px; }
+
+/* the phone's copy view: the session's text, selectable with the phone's own handles */
+.copy-view { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: var(--bg); padding-top: env(safe-area-inset-top); }
+.copy-h { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 4px; border-bottom: 1px solid var(--border); background: var(--side); flex: none; }
+.copy-h b { display: block; font-size: 15px; }
+.copy-text { flex: 1; margin: 0; overflow: auto; padding: 12px 12px calc(16px + env(safe-area-inset-bottom)); font: 12.5px/1.45 var(--mono, ui-monospace, monospace); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; background: var(--panel); color: var(--text); }
+
 @media (max-width: 760px) {
   :root { --fs: 14px; }
   .shell, .shell.side-hidden { display: block; }
@@ -605,7 +700,8 @@ a.pr-badge:hover { text-decoration: none; filter: brightness(.96); }
   .shell.home > .side { display: flex; visibility: visible; height: 100%; border-right: 0; background: var(--bg); }
   .shell.home > .main { display: none; }
   .side-head { height: auto; padding: calc(12px + env(safe-area-inset-top)) 10px 10px 14px; }
-  .brand { font-size: 21px; }
+  .side-head { gap: 4px; }
+  .brand { font-size: 21px; min-width: 0; margin-left: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } /* the buttons keep their room on a narrow phone */
   .logo { width: 30px; height: 30px; }
   .deckmark { width: 28px; height: 28px; }
   .side-search { padding: 0 12px 10px; }
@@ -643,16 +739,17 @@ a.pr-badge:hover { text-decoration: none; filter: brightness(.96); }
 
   .top { height: auto; min-height: 56px; padding: calc(4px + env(safe-area-inset-top)) 6px 4px; gap: 2px; background: var(--side); }
   .back { display: inline-grid; }
-  .side-toggle, .crumbs, .lens-group, .palette-btn, .status { display: none; }
+  .side-toggle, .crumbs, .palette-btn, .status { display: none; }
+  /* the lenses (Terminal, Changes, Code, Env) are icons in the top bar: no bottom bar taking a row from the terminal */
+  .lens-group .lens { height: 34px; padding: 0 9px; }
+  .lens-group .lens .i { width: 17px; height: 17px; }
   .top-title { display: block; padding-left: 2px; }
   .top-title .inline-edit { font-size: 16px; }
+  /* only what's needed up top: the rest (branch, PR, servers, ⟳) is in ⋯ */
+  .top-title h1 { font-size: 16px; }
+  .top-sub, .top-actions .pill, .top-actions .reload-btn { display: none; }
   .top-actions .btn, .top-actions .seg { display: none; }
-  .bottom-nav { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; background: var(--side); border-top: 1px solid var(--border); padding-bottom: env(safe-area-inset-bottom); flex: none; }
-  .bottom-nav button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; height: 56px; color: var(--muted); font-size: 11px; font-weight: 600; position: relative; }
-  .bottom-nav button .i { width: 21px; height: 21px; }
-  .bottom-nav button.sel { color: var(--accent); }
-  .bottom-nav .n { position: absolute; top: 6px; left: calc(50% + 6px); font-size: 10px; background: var(--accent); color: var(--on-accent); border-radius: 999px; padding: 0 5px; line-height: 15px; }
-  .scroll { padding: 12px 10px 24px; }
+  .scroll { padding: 12px 10px calc(24px + env(safe-area-inset-bottom)); }
   .cols { grid-template-columns: 1fr; }
   .kv { grid-template-columns: 92px minmax(0, 1fr); }
   .hero-actions { width: 100%; }
@@ -669,13 +766,24 @@ a.pr-badge:hover { text-decoration: none; filter: brightness(.96); }
   .ftabs { height: 44px; }
   .ftab { height: 34px; }
   .ftab .x, .ftab-k { display: none; }
-  .keys { display: flex; gap: 5px; padding: 5px 6px; overflow-x: auto; scrollbar-width: none; background: var(--side); border-top: 1px solid var(--border); flex: none; }
-  .keys button { flex: none; min-width: 44px; height: 34px; padding: 0 10px; border-radius: 9px; background: var(--panel-2); font-weight: 600; font-size: 13px; }
+  /* all keys on one line, ⏎ included: they share the width rather than scroll sideways */
+  .keys { display: flex; gap: 4px; padding: 5px 6px; background: var(--side); border-top: 1px solid var(--border); flex: none; }
+  .keys button { flex: 1 1 0; min-width: 0; height: 36px; padding: 0; display: grid; place-items: center; border-radius: 9px; background: var(--panel-2); font-weight: 600; font-size: 12.5px; white-space: nowrap; }
   .keys button:active { background: var(--accent-soft); color: var(--accent); }
-  .compose { padding: 6px 8px; background: var(--side); }
+  .compose { padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); background: var(--side); }
+  .attachments { display: flex; gap: 6px; padding: 6px 8px 0; overflow-x: auto; scrollbar-width: none; background: var(--side); flex: none; }
+  .att { display: inline-flex; align-items: center; gap: 6px; height: 38px; max-width: 210px; padding: 0 4px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); font-size: 12.5px; flex: none; }
+  .att img { width: 30px; height: 30px; object-fit: cover; border-radius: 6px; flex: none; }
+  .att > .i { margin-left: 4px; color: var(--muted); }
+  .att.busy { opacity: .65; }
+  .att.busy > .spin { margin-right: 6px; }
+  .att button { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; color: var(--muted); flex: none; }
   .stage .compose { padding: 6px 8px; }
-  .compose textarea { min-height: 40px; height: 40px; padding: 9px 12px; }
+  /* a message is prose: the phone's own font, smaller and tighter than the UI's mono (iOS keeps 16px: it zooms into smaller fields) */
+  .compose textarea { min-height: 40px; height: 40px; padding: 9px 12px; font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  @supports (-webkit-touch-callout: none) { .compose textarea { font-size: 16px; } }
   .compose .btn { height: 40px; width: 48px; padding: 0; }
+  .compose .btn.attach { width: 36px; color: var(--muted); }
 
   .code-frame { margin: 6px; }
 
@@ -693,14 +801,23 @@ a.pr-badge:hover { text-decoration: none; filter: brightness(.96); }
   .palette-item { height: 46px; }
   .hide-phone { display: none !important; }
 
+  /* worktree rows: name and details get the full width; the sessions in it go on a line of their own */
+  .wt-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "ic main add" ". sess sess"; align-items: start; row-gap: 8px; column-gap: 10px; padding: 10px 6px 10px 12px; }
+  .wt-row > .i { grid-area: ic; margin-top: 3px; }
+  .wt-main { grid-area: main; }
+  .wt-row > .icon-btn { grid-area: add; margin-top: -6px; }
+  .wt-sess { grid-area: sess; max-width: none; justify-content: flex-start; }
+  .wt-sess:empty { display: none; }
+
   /* keyboard up: the terminal gets the room; the header, tabs and bottom bar come back when it goes down */
-  .keyboard .view > .top, .keyboard .ftabs, .keyboard .bottom-nav { display: none; }
+  .keyboard .view > .top, .keyboard .ftabs { display: none; }
   .keyboard .view { padding-top: env(safe-area-inset-top); }
   .keyboard .term-unit { margin-top: 4px; }
   .keyboard .term { overflow: hidden; } /* scrolled to keep the cursor's line in view (app.js) */
   .keyboard .keys { padding: 4px 6px; gap: 4px; }
-  .keyboard .keys button { height: 32px; min-width: 40px; }
+  .keyboard .keys button { height: 32px; }
   .keyboard .compose { padding: 4px 6px; }
+  .keyboard .attachments { padding: 4px 6px 0; }
 }
 @media (min-width: 761px) { .only-phone { display: none !important; } }
 .where-chip { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; margin-left: 8px; border-radius: 999px; background: var(--panel-2); color: var(--muted); font-size: 12px; min-width: 0; max-width: 280px; flex: 0 1 auto; }

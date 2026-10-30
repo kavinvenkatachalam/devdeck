@@ -1,0 +1,66 @@
+# A release, from a version tag:  git tag v0.5.0 && git push origin v0.5.0
+# Builds devdeck for Homebrew and the devdeck app on Apple Silicon, publishes both as a GitHub release, then points
+# the Homebrew formula (kavinvenkatachalam/homebrew-tap) at it. The tap goes last, so whoever installs or updates
+# meanwhile still gets a complete release.
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15 # Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24 # what Homebrew's node@24 runs it on: node-pty is compiled for this
+
+      - name: Version from the tag
+        id: v
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Check
+        run: |
+          npm ci --no-audit --no-fund
+          npm run check
+          npm test
+
+      - name: Package devdeck
+        run: scripts/package.sh "${{ steps.v.outputs.version }}"
+
+      - name: Build the app
+        run: |
+          cd desktop
+          npm ci --no-audit --no-fund
+          npx electron-builder --mac --publish never --config.extraMetadata.version="${{ steps.v.outputs.version }}"
+          # what `devdeck desktop install` checks before installing it
+          codesign --verify --deep --strict release/mac-arm64/devdeck.app
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "devdeck ${{ steps.v.outputs.version }}" --generate-notes \
+            dist/devdeck-*-darwin-arm64.tar.gz desktop/release/devdeck-desktop-*-arm64.dmg
+
+      - name: Update the Homebrew formula
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          version="${{ steps.v.outputs.version }}"
+          sha=$(shasum -a 256 dist/devdeck-$version-darwin-arm64.tar.gz | cut -d' ' -f1)
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/kavinvenkatachalam/homebrew-tap.git" "$RUNNER_TEMP/tap"
+          mkdir -p "$RUNNER_TEMP/tap/Formula"
+          sed -e "s/VERSION/$version/g" -e "s/SHA_DARWIN_ARM64/$sha/" .github/formula-template.rb > "$RUNNER_TEMP/tap/Formula/devdeck.rb"
+          cd "$RUNNER_TEMP/tap"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/devdeck.rb
+          git commit -m "devdeck $version"
+          git push

@@ -1,0 +1,64 @@
+<!doctype html>
+<!-- Shown when devdeck isn't running: Start (or, without the devdeck command, how to install it). -->
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">
+<title>devdeck</title>
+<style>
+  :root { --bg: #f4f4f5; --card: #ffffff; --text: #18181b; --muted: #71717a; --border: #e4e4e7; --accent: #4f46e5; --danger: #dc2626; --code: #f4f4f5; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #18181b; --card: #212126; --text: #ececef; --muted: #a1a1aa; --border: #3a3a42; --accent: #818cf8; --danger: #f87171; --code: #18181b; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { display: grid; place-items: center; padding: 24px; background: var(--bg); color: var(--text); font: 13px/1.55 "SF Mono", ui-monospace, Menlo, monospace; -webkit-user-select: none; }
+  .card { width: min(460px, 100%); padding: 28px; border-radius: 14px; background: var(--card); border: 1px solid var(--border); box-shadow: 0 8px 30px rgb(0 0 0 / .08); }
+  h1 { margin: 0 0 6px; font-size: 17px; }
+  p { margin: 0 0 18px; color: var(--muted); }
+  button { font: inherit; font-weight: 600; height: 34px; padding: 0 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .6; cursor: default; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  pre { margin: 0 0 12px; padding: 10px 12px; border-radius: 8px; background: var(--code); border: 1px solid var(--border); white-space: pre-wrap; word-break: break-all; -webkit-user-select: text; font-size: 12px; }
+  .err { margin-top: 14px; color: var(--danger); white-space: pre-wrap; -webkit-user-select: text; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+  <div class="card" id="start" hidden>
+    <h1>devdeck isn't running</h1>
+    <p>Start it, and this window opens it. It keeps running when you close the app, for your browser and phone.</p>
+    <div class="row"><button class="primary" id="go">Start devdeck</button><button id="again">Check again</button></div>
+    <div class="err" id="err" hidden></div>
+  </div>
+  <div class="card" id="install" hidden>
+    <h1>Install devdeck</h1>
+    <p>The app is a window onto devdeck, which runs from the <b>devdeck</b> command. Install it in Terminal:</p>
+    <pre id="cmd">curl -fsSL https://raw.githubusercontent.com/kavinvenkatachalam/devdeck/main/install.sh | sh</pre>
+    <div class="row"><button class="primary" id="copy">Copy</button><button id="again2">Check again</button></div>
+  </div>
+<script>
+  const cli = new URLSearchParams(location.search).get('cli');
+  document.getElementById(cli ? 'start' : 'install').hidden = false;
+  const err = document.getElementById('err');
+  const go = document.getElementById('go');
+  go.onclick = async () => {
+    go.disabled = true;
+    go.textContent = 'Starting…';
+    err.hidden = true;
+    try { await window.devdeckApp.start(); } catch (e) {
+      err.textContent = String(e.message || e).replace(/^Error invoking remote method 'start': (Error: )?/, '');
+      err.hidden = false;
+      go.disabled = false;
+      go.textContent = 'Start devdeck';
+    }
+  };
+  for (const id of ['again', 'again2']) document.getElementById(id).onclick = () => window.devdeckApp.retry();
+  document.getElementById('copy').onclick = async (e) => {
+    await navigator.clipboard.writeText(document.getElementById('cmd').textContent);
+    e.target.textContent = 'Copied';
+  };
+</script>
+</body>
+</html>

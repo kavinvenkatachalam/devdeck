@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Claude Code hook: records what Claude is doing in a devdeck terminal, for the status dots (see `devdeck hooks`).
+#   devdeck-hook working|idle|pretool|notification|end      (Claude passes the event's JSON on stdin)
+# Writes ~/.local/state/devdeck/agents/<tmux pane number>. Outside devdeck's tmux it does nothing. Never fails Claude.
+[[ "$TMUX" == */devdeck,* && -n "$TMUX_PANE" ]] || exit 0
+state=$1
+input=$(cat) # read it all, so Claude never writes into a closed pipe
+case "$state" in
+  # AskUserQuestion shows a picker that waits for you; any other tool means a turn is running
+  pretool) [[ "$input" =~ \"tool_name\"[[:space:]]*:[[:space:]]*\"AskUserQuestion\" ]] && state=waiting || state=working ;;
+  # "Claude is waiting for your input" comes after a minute idle; the rest (permission requests) need you
+  notification) [[ "$input" == *"waiting for your input"* ]] && state=idle || state=waiting ;;
+  working | idle | end) ;;
+  *) exit 0 ;;
+esac
+dir="${XDG_STATE_HOME:-$HOME/.local/state}/devdeck/agents"
+file="$dir/${TMUX_PANE#%}"
+if [ "$state" = end ]; then rm -f "$file"; exit 0; fi
+mkdir -p "$dir" 2>/dev/null
+printf '%s\n' "$state" > "$file" 2>/dev/null
+exit 0

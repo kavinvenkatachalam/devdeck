@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>devdeck</title>
+  <style>
+    :root { --bg: #f6f7f9; --panel: #fff; --text: #1f2328; --muted: #6b7280; --accent: #6366f1; --border: #e5e7eb; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #111318; --panel: #181a20; --text: #e6e6ea; --muted: #9ca3af; --accent: #818cf8; --border: #2a2d36; } }
+    body { margin: 0; min-height: 100dvh; display: grid; place-items: center; background: var(--bg); color: var(--text); font: 15px/1.5 ui-sans-serif, system-ui, sans-serif; padding: 24px; box-sizing: border-box; }
+    main { max-width: 340px; text-align: center; }
+    img { width: 72px; height: 72px; border-radius: 18px; }
+    h1 { font-size: 19px; margin: 16px 0 6px; }
+    p { color: var(--muted); margin: 0 0 18px; }
+    ul { text-align: left; color: var(--muted); padding-left: 20px; margin: 0 0 22px; }
+    button { height: 44px; padding: 0 22px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <main>
+    <img src="/icons/icon-192.png" alt="">
+    <h1>Can't reach your Mac</h1>
+    <p>devdeck runs on your Mac; this phone couldn't get to it.</p>
+    <ul>
+      <li>Is the Mac awake?</li>
+      <li>Is devdeck running? (<code>devdeck status</code>)</li>
+      <li>Is Tailscale on, on both the Mac and the phone?</li>
+    </ul>
+    <button onclick="location.reload()">Try again</button>
+  </main>
+  <script>addEventListener('online', () => location.reload());</script>
+</body>
+</html>

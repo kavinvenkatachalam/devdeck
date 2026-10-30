@@ -1,6 +1,6 @@
 // The pull request for a worktree's branch, from GitHub via `gh` (uses your gh login).
-// Served from a cache and refreshed in the background, so the list never waits on GitHub. GitHub can't push to
-// devdeck (a webhook needs a public URL and admin on the repo), so this polls, as rarely as the PR's state allows.
+// GitHub is asked when devdeck first sees a branch, and again only when you press reload (⟳ in the header):
+// no polling in the background. The list never waits on GitHub; it shows the cached answer.
 import { capture } from './sh.ts';
 import { cleanEnv } from './tmux.ts';
 
@@ -25,37 +25,37 @@ export type PR = {
 };
 
 const FIELDS = 'number,title,url,state,isDraft,reviewDecision,reviewRequests,mergeable,baseRefName,headRefOid,updatedAt,closedAt,mergedAt,additions,deletions,statusCheckRollup';
-const RETRY = 300_000; // gh missing / not logged in / offline: don't hammer it
-// How long an answer stays good: checks running change fast, a merged PR never does.
-const ttl = (pr: PR | null) =>
-  !pr ? 300_000 : pr.state === 'MERGED' ? 1_800_000 : pr.state === 'CLOSED' ? 600_000 : pr.checks.pending ? 60_000 : 120_000;
+const RETRY = 300_000; // gh missing / not logged in / offline: asked again after 5 min, so a first try that failed recovers
 // long-lived branches have release PRs or fork PRs with the same head name; not "this worktree's PR"
 const SKIP = new Set(['main', 'master', 'develop']);
 
-const cache = new Map<string, { at: number; ttl: number; value?: PR | null; pending?: Promise<void> }>();
+const cache = new Map<string, { at: number; failed?: boolean; value?: PR | null; pending?: Promise<void> }>();
 
 // Branches that ever went to GitHub: on a remote, or set to track one (that stays after the remote branch is
 // deleted on merge). Only these can have a PR, so a branch never pushed costs no GitHub request.
 // One git call per repo, refreshed every minute; undefined until the first answer.
-const pushedCache = new Map<string, { at: number; value?: Set<string> }>();
-function pushed(repo: string) {
+const pushedCache = new Map<string, { at: number; value?: Set<string>; pending?: Promise<void> }>();
+function readPushed(repo: string) {
   const c = pushedCache.get(repo) ?? { at: 0 };
-  if (Date.now() - c.at > 60_000) {
-    c.at = Date.now();
-    pushedCache.set(repo, c);
-    Promise.all([
-      capture('git', ['for-each-ref', '--format=%(refname:lstrip=3)', 'refs/remotes/'], { cwd: repo, env: cleanEnv() }),
-      capture('git', ['config', '--get-regexp', '^branch\\..*\\.merge$'], { cwd: repo, env: cleanEnv() }),
-    ]).then(([remote, tracking]) => {
-      c.value = new Set([...remote.out.split('\n'), ...tracking.out.split('\n').map((l) => /^branch\.(.*)\.merge /.exec(l)?.[1] ?? '')].filter(Boolean));
-    });
-  }
-  return c.value;
+  c.at = Date.now();
+  pushedCache.set(repo, c);
+  c.pending = Promise.all([
+    capture('git', ['for-each-ref', '--format=%(refname:lstrip=3)', 'refs/remotes/'], { cwd: repo, env: cleanEnv() }),
+    capture('git', ['config', '--get-regexp', '^branch\\..*\\.merge$'], { cwd: repo, env: cleanEnv() }),
+  ]).then(([remote, tracking]) => {
+    c.value = new Set([...remote.out.split('\n'), ...tracking.out.split('\n').map((l) => /^branch\.(.*)\.merge /.exec(l)?.[1] ?? '')].filter(Boolean));
+  });
+  return c.pending;
+}
+function pushed(repo: string) {
+  const c = pushedCache.get(repo);
+  if (!c || Date.now() - c.at > 60_000) readPushed(repo);
+  return pushedCache.get(repo)?.value;
 }
 const unpushed = (repo: string, branch: string) => !pushed(repo)?.has(branch);
 
 // gh reports every run of a check (re-runs, pushes); keep the latest per workflow + name.
-function summarize(rollup: any[]): Checks {
+export function summarize(rollup: any[]): Checks {
   const latest = new Map<string, any>();
   for (const c of rollup ?? []) {
     const key = `${c.workflowName ?? ''}/${c.name ?? c.context}`;
@@ -101,13 +101,14 @@ async function fetchPr(repo: string, branch: string): Promise<PR | null> {
 }
 
 function refresh(key: string, repo: string, branch: string) {
-  const c = cache.get(key) ?? { at: 0, ttl: RETRY };
+  const c = cache.get(key) ?? { at: 0 };
+  if (c.pending) return c.pending;
   c.pending = (async () => {
     try {
       c.value = await fetchPr(repo, branch);
-      c.ttl = ttl(c.value);
+      c.failed = false;
     } catch {
-      c.ttl = RETRY;
+      c.failed = true;
     }
     c.at = Date.now();
     c.pending = undefined;
@@ -142,16 +143,28 @@ export function prFor(repo: string, branch: string | undefined, head: string): P
   if (unpushed(repo, branch)) return null;
   const key = `${repo}\0${branch}`;
   const c = cache.get(key);
-  if (!c?.pending && (!c || Date.now() - c.at > c.ttl)) refresh(key, repo, branch);
+  if (!c || (c.failed && !c.pending && Date.now() - c.at > RETRY)) refresh(key, repo, branch); // first sight, or a failed try
   return current(cache.get(key)?.value, repo, head);
 }
 
-// For the open worktree: wait for a recent answer instead of the cached one.
-export async function freshPr(repo: string, branch: string | undefined, head: string) {
-  if (!branch || SKIP.has(branch) || unpushed(repo, branch)) return null;
+// You opened this worktree (or a session in it): its PR afresh, one GitHub call, unless it was asked within 15 s
+// (flipping between two worktrees doesn't ask again and again).
+export async function refreshPr(repo: string, branch: string) {
+  if (!branch || SKIP.has(branch)) return;
+  await readPushed(repo); // pushed since?
+  if (unpushed(repo, branch)) return;
   const key = `${repo}\0${branch}`;
   const c = cache.get(key);
-  if (c?.pending) await c.pending;
-  else if (!c || Date.now() - c.at > 20_000) await refresh(key, repo, branch);
-  return current(cache.get(key)?.value, repo, head) ?? null;
+  if (c && !c.pending && Date.now() - c.at < 15_000) return;
+  await refresh(key, repo, branch);
+}
+
+// Reload: which branches are pushed (git, local), then every branch's PR afresh from GitHub, all at once.
+// Branches pushed since are asked about by the list that follows (first sight).
+export async function refreshPrs() {
+  await Promise.all([...pushedCache.keys()].map(readPushed));
+  await Promise.all([...cache.keys()].map((key) => {
+    const [repo, branch] = key.split('\0');
+    return unpushed(repo, branch) ? undefined : refresh(key, repo, branch);
+  }));
 }

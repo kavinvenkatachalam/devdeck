@@ -1,14 +1,14 @@
 // ToolJet dev environment for one checkout: .env, deps, DB, servers, dev login and license.
 // Bundled here so it works on any branch, with or without tj/ToolBelt; the steps follow tools/tj.
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { basename, dirname, join } from 'node:path';
 import { readEnv, writeEnv, type Env } from './envfile.ts';
 import type { Ctx } from './jobs.ts';
 import { activeJob, lastJob } from './jobs.ts';
 import { freePort, listener, listening, reachable, waitHttp } from './net.ts';
-import { dbNames, localModule, nvmrc, type Repo, SUBMODULES, unsavedWork, worktrees } from './repo.ts';
+import { dbKey, dbNames, localModule, nvmrc, type Repo, SUBMODULES, unsavedWork, worktrees } from './repo.ts';
 import { loadSettings } from './settings.ts';
 import { alive, capture, cloneTree, CmdError, deleteInBackground, git, killGroup, killPids, owned, procStart, run, startDetached, tail } from './sh.ts';
 import { clearRun, forget, loadRun, loadState, logFile, rotateLog, saveRun, STATE_ROOT, tjPorts, tjRun, updateState } from './state.ts';
@@ -93,16 +93,15 @@ const pluginsBuilt = (plugins: string) => ['dist', ...PLUGIN_ENTRIES].every((x) 
 const depsReady = (root: string) =>
   ['server', 'frontend', 'plugins'].every((d) => existsSync(join(root, d, 'node_modules'))) && pluginsBuilt(join(root, 'plugins'));
 
-async function serviceState(repo: Repo, svc: Svc) {
+// running = its port answers. A server devdeck started whose process is alive but whose port is closed is
+// 'starting': still building, or stuck (a Nest watch server with a compile error stays alive with nothing listening).
+export async function serviceState(repo: Repo, svc: Svc) {
   const port = ports(repo.root)[svc];
   const url = `http://localhost:${port}`;
   const mine = loadRun(repo.root, svc);
-  if (await owned(mine)) return { state: 'running' as const, port, url, pid: mine!.pid, by: 'devdeck' };
-  if (!(await listening(port))) {
-    // still starting: process alive but the port isn't open yet
-    if (mine && alive(mine.pid)) return { state: 'starting' as const, port, url, pid: mine.pid, by: 'devdeck' };
-    return { state: 'stopped' as const, port, url };
-  }
+  const up = await listening(port);
+  if (await owned(mine)) return { state: up ? ('running' as const) : ('starting' as const), port, url, pid: mine!.pid, by: 'devdeck' };
+  if (!up) return { state: 'stopped' as const, port, url };
   const tj = tjRun(repo.root, svc);
   if (await owned(tj)) return { state: 'running' as const, port, url, pid: tj!.pid, by: 'tj' };
   const l = await listener(port);
@@ -112,9 +111,22 @@ async function serviceState(repo: Repo, svc: Svc) {
 
 // Has this checkout got its own .env? An unset worktree would otherwise fall back to the default
 // ports (3000/8082), which belong to the main checkout.
+// A worktree sharing main's databases names them on purpose (see dbSource).
 export function isConfigured(repo: Repo) {
   const env = ownEnv(repo);
-  return existsSync(join(repo.root, '.env')) && (!repo.isWorktree || (env.PG_DB !== undefined && env.PG_DB !== mainEnv(repo).PG_DB && !!env.PORT));
+  return existsSync(join(repo.root, '.env')) && (!repo.isWorktree || (env.PG_DB !== undefined && !!env.PORT && (env.PG_DB !== mainEnv(repo).PG_DB || !!loadState(repo.root).db?.share)));
+}
+
+// Where a new worktree's databases come from, picked when it's created: a copy of another checkout's, or that
+// checkout's own, shared. None (or a checkout without databases yet): fresh ones, migrated from scratch.
+function dbSource(repo: Repo) {
+  const plan = loadState(repo.root).db;
+  if (!plan?.from || plan.from === repo.root) return undefined;
+  const own = readEnv(join(plan.from, '.env'));
+  if (!own.PG_DB) return undefined; // not set up (a worktree without its own .env would name main's)
+  const env = { ...mainEnv(repo), ...own };
+  const label = plan.from === repo.main ? basename(repo.main) : loadState(plan.from).branch || basename(plan.from);
+  return { share: plan.share, env, label, dev: own.PG_DB, tjdbDev: env.TOOLJET_DB };
 }
 
 export type EnvStatus = Awaited<ReturnType<typeof envStatus>>;
@@ -197,8 +209,9 @@ async function takenPorts(main: string, self: string) {
 async function writeWorktreeEnv(ctx: Ctx, repo: Repo) {
   const file = join(repo.root, '.env');
   const own = ownEnv(repo);
-  const names = dbNames(repo.branch || 'detached');
-  if (existsSync(file) && own.PG_DB && own.PG_DB !== mainEnv(repo).PG_DB && own.PORT) {
+  const src = dbSource(repo);
+  const names = src?.share ? { dev: src.dev, tjdbDev: src.tjdbDev || dbNames(dbKey(repo)).tjdbDev } : dbNames(dbKey(repo));
+  if (isConfigured(repo)) {
     ctx.log(`.env already set: ${own.PG_DB}, server :${own.PORT}`);
     updateState(repo.root, { ports: ports(repo.root), dbs: { dev: own.PG_DB, tjdbDev: own.TOOLJET_DB } });
     return;
@@ -217,7 +230,7 @@ async function writeWorktreeEnv(ctx: Ctx, repo: Repo) {
     TOOLJET_HOST: `http://localhost:${frontend}`,
   });
   updateState(repo.root, { ports: { server, frontend }, dbs: { dev: names.dev, tjdbDev: names.tjdbDev } });
-  ctx.log(`.env → DB ${names.dev}, server :${server}, frontend :${frontend}`);
+  ctx.log(`.env → DB ${names.dev}${src?.share ? ` (${src.label}'s, shared)` : ''}, server :${server}, frontend :${frontend}`);
 }
 
 const lockHash = (dir: string) => createHash('sha1').update(readFileSync(join(dir, 'package-lock.json'))).digest('hex');
@@ -331,8 +344,49 @@ async function buildPlugins(ctx: Ctx, repo: Repo) {
   updateState(repo.root, { deps: { ...loadState(repo.root).deps, 'plugins:build': hash } });
 }
 
+// Copies of another checkout's databases (pg_dump, then pg_restore into new ones): a second or two at dev sizes, and
+// fine while that checkout's servers run. One that exists already is kept, so setting up again keeps its data.
+async function copyDbs(ctx: Ctx, repo: Repo, src: NonNullable<ReturnType<typeof dbSource>>) {
+  const say = (l: string) => ctx.log(`[db] ${l}`);
+  const env = { ...mainEnv(repo), ...ownEnv(repo) };
+  const tmp = mkdtempSync(join(tmpdir(), 'devdeck-db-'));
+  try {
+    for (const [prefix, from, to] of [['PG', src.dev, env.PG_DB], ['TOOLJET_DB', src.tjdbDev, env.TOOLJET_DB]] as const) {
+      if (!from || !to || from === to) continue;
+      if (await dbExists(env, to)) {
+        say(`${to} exists already, kept`);
+        continue;
+      }
+      if (!(await dbExists(src.env, from))) {
+        say(`${from} doesn't exist, so ${to} starts empty`);
+        continue;
+      }
+      const a = pgArgs(src.env, prefix);
+      const b = pgArgs(env, prefix);
+      const dump = join(tmp, `${from}.dump`);
+      const pg = async (cmd: string, args: string[], password: string) => {
+        const r = await capture(cmd, args, { cwd: '/', env: { ...cleanEnv(), PGPASSWORD: password } });
+        if (r.code !== 0) throw new CmdError(`${cmd} failed: ${r.err.split('\n').slice(0, 3).join(' ')}`);
+      };
+      await pg('pg_dump', [...a.args, '-Fc', '-f', dump, from], a.password);
+      await pg('createdb', [...b.args, to], b.password);
+      await pg('pg_restore', [...b.args, '--no-owner', '--no-acl', '-d', to, dump], b.password);
+      say(`${to} copied from ${from}`);
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 async function setupDb(ctx: Ctx, repo: Repo) {
   const say = (l: string) => ctx.log(`[db] ${l}`);
+  const src = dbSource(repo);
+  // its migrations would change the other checkout's databases too
+  if (src?.share) {
+    say(`shares ${src.label}'s databases (${src.dev}); migrations not run: run npm run db:migrate in server/ if this branch adds any`);
+    return ctx.detail('db', `shares ${src.label}'s`);
+  }
+  if (src) await copyDbs(ctx, repo, src);
   await run('DB setup', 'npm', ['run', 'db:setup'], { cwd: join(repo.root, 'server'), env: childEnv(repo.root, { NODE_ENV: '' }), log: logFile(repo.root, 'setup'), onLine: say });
 }
 
@@ -378,11 +432,18 @@ async function startService(ctx: Ctx, repo: Repo, svc: Svc) {
   if (s.state === 'running') return ctx.detail(svc, `already running :${s.port}`);
   if (s.state === 'busy') throw new CmdError(`port ${s.port} is used by ${s.by}`, `stop it, or free the port: lsof -nP -iTCP:${s.port} -sTCP:LISTEN`);
   const sp = spec(svc, repo.root);
-  rotateLog(repo.root, svc);
   const log = logFile(repo.root, svc);
-  const pid = startDetached('npm', sp.args, { cwd: sp.cwd, env: childEnv(repo.root, sp.env), log });
-  saveRun(repo.root, svc, { pid, procStart: await procStart(pid), port: sp.port, startedAt: new Date().toISOString(), log });
-  ctx.log(`${svc} starting on :${sp.port} (pid ${pid}); log: ${log}`);
+  let pid: number;
+  if (s.state === 'starting') {
+    // ours, alive, port not open yet: wait for it rather than start a second one on the same port
+    pid = s.pid!;
+    ctx.log(`${svc} is already starting (pid ${pid}), waiting for it`);
+  } else {
+    rotateLog(repo.root, svc);
+    pid = startDetached('npm', sp.args, { cwd: sp.cwd, env: childEnv(repo.root, sp.env), log });
+    saveRun(repo.root, svc, { pid, procStart: await procStart(pid), port: sp.port, startedAt: new Date().toISOString(), log });
+    ctx.log(`${svc} starting on :${sp.port} (pid ${pid}); log: ${log}`);
+  }
   const outcome = await waitHttp(sp.health, 8 * 60_000, () => alive(pid));
   if (outcome !== 'ready') {
     if (outcome === 'died') clearRun(repo.root, svc);
@@ -599,6 +660,17 @@ export const REMOVE_STEPS: [string, string][] = [
   ['worktree', 'Remove worktree'],
 ];
 
+// Databases the other checkouts of this repo point at (main included), each with its _test twin.
+async function dbsElsewhere(repo: Repo) {
+  const used = new Set<string>();
+  for (const w of [{ path: repo.main }, ...(await worktrees(repo.main))]) {
+    if (w.path === repo.root) continue;
+    const e = readEnv(join(w.path, '.env'));
+    for (const db of [e.PG_DB, e.TOOLJET_DB, loadState(w.path).dbs?.dev, loadState(w.path).dbs?.tjdbDev]) if (db) used.add(db).add(`${db}_test`);
+  }
+  return used;
+}
+
 export async function removeWorktree(ctx: Ctx, repo: Repo, discard: boolean) {
   if (!repo.isWorktree) throw new CmdError('refusing to remove the main checkout');
   await ctx.step('check', async () => {
@@ -609,12 +681,14 @@ export async function removeWorktree(ctx: Ctx, repo: Repo, discard: boolean) {
   if (repo.tooljet) {
     await stop(ctx, repo);
     await ctx.step('dbs', async () => {
-      // Only names derived from this branch (or recorded for it), and never the main checkout's.
+      // Only names derived from this branch (or recorded for it), and never one another checkout uses: the main
+      // checkout's, or one a detached worktree shares (older setups named every detached worktree's DBs alike).
       const env = { ...mainEnv(repo), ...ownEnv(repo) };
-      const names = dbNames(repo.branch || 'detached');
-      const recorded = loadState(repo.root).dbs ?? {};
-      const mainDbs = new Set([mainEnv(repo).PG_DB, mainEnv(repo).TOOLJET_DB]);
-      const pick = (...xs: (string | undefined)[]) => [...new Set(xs.filter((x): x is string => !!x && !mainDbs.has(x)))];
+      const names = dbNames(dbKey(repo));
+      // shared ones are another checkout's: never dropped from here
+      const recorded = loadState(repo.root).db?.share ? {} : (loadState(repo.root).dbs ?? {});
+      const others = await dbsElsewhere(repo);
+      const pick = (...xs: (string | undefined)[]) => [...new Set(xs.filter((x): x is string => !!x && !others.has(x)))];
       const pg = pick(names.dev, recorded.dev, `${names.dev}_test`);
       const tjdb = pick(names.tjdbDev, recorded.tjdbDev, `${names.tjdbDev}_test`);
       for (const [prefix, list] of [['PG', pg], ['TOOLJET_DB', tjdb]] as const)

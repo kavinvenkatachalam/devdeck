@@ -3,9 +3,20 @@
 #   devdeck            start in the background (if not running) and print the URLs
 #   devdeck stop | restart | status | logs | open
 #   devdeck run        run in the foreground
+#   devdeck autostart on | off | status    start devdeck when you log in to the Mac
+#   devdeck hooks      print the Claude Code hooks that make the status dots exact
+#   devdeck version | update      this devdeck's version; update it (and the app) through Homebrew
+#   devdeck desktop install | update | status | uninstall    the devdeck app, in /Applications
 # Stopping devdeck leaves terminals (own tmux server) and ToolJet servers (own process groups) running.
 set -e
 here=$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+# Installed with Homebrew, the code sits in a folder named after its version, which an upgrade deletes: whatever is
+# saved for later (the login item, Claude's hooks) points at Homebrew's stable opt/ path instead.
+home=$(printf '%s' "$here" | sed 's#/Cellar/devdeck/[^/]*/#/opt/devdeck/#')
+# how to run devdeck again later: Homebrew's command (it sets the two below), else this script
+entry="${DEVDECK_ENTRY:-$home/bin/devdeck}"
+# Homebrew's devdeck brings its own Node, so the node in your PATH (and your terminals') stays yours
+node="${DEVDECK_NODE:-node}"
 state="${XDG_STATE_HOME:-$HOME/.local/state}/devdeck"
 pidfile="$state/devdeck.pid"
 log="$state/devdeck.log"
@@ -17,16 +28,16 @@ running() { [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; }
 up() { curl -fs -o /dev/null --max-time 2 "$url/api/settings"; }
 
 need_node() {
-  command -v node >/dev/null || { echo "devdeck needs Node 22.6+ (node not found)" >&2; exit 1; }
-  node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=6)?0:1)' ||
-    { echo "devdeck needs Node 22.6+ (found $(node -v))" >&2; exit 1; }
+  command -v "$node" >/dev/null || { echo "devdeck needs Node 22.6+ (node not found)" >&2; exit 1; }
+  "$node" -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=6)?0:1)' ||
+    { echo "devdeck needs Node 22.6+ (found $("$node" -v))" >&2; exit 1; }
 }
 
 # The phone reaches devdeck through Tailscale on :8444 (never the tailnet's main URL, which HexoKit uses).
 phone_url() {
   command -v tailscale >/dev/null || return 0
   local host
-  host=$(tailscale status --json 2>/dev/null | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const j=JSON.parse(d);if(j.BackendState==="Running")console.log(j.Self.DNSName.replace(/\.$/,""))}catch{}})')
+  host=$(tailscale status --json 2>/dev/null | "$node" -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const j=JSON.parse(d);if(j.BackendState==="Running")console.log(j.Self.DNSName.replace(/\.$/,""))}catch{}})')
   [ -n "$host" ] || return 0
   if ! tailscale serve status 2>/dev/null | grep -q ":8444"; then
     tailscale serve --bg --https=8444 "http://localhost:$port" >/dev/null 2>&1 || return 0
@@ -41,7 +52,7 @@ start() {
     need_node
     if up; then echo "port $port is already in use by something else" >&2; exit 1; fi
     # own session (setsid), so closing this terminal doesn't take devdeck with it
-    node -e '
+    "$node" -e '
       const { spawn } = require("child_process"); const fs = require("fs");
       const out = fs.openSync(process.argv[2], "a");
       const p = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", process.argv[1]], { detached: true, stdio: ["ignore", out, out] });
@@ -66,6 +77,82 @@ stop() {
   rm -f "$pidfile"
 }
 
+# Start at login: a LaunchAgent runs `devdeck start` once (it puts devdeck in the background and exits; the agent
+# leaves it running). launchd starts with a bare PATH, so the one you have now is saved with it (node, tmux, git, gh).
+label=dev.devdeck
+plist="$HOME/Library/LaunchAgents/$label.plist"
+autostart() {
+  case "${1:-status}" in
+    on)
+      need_node
+      mkdir -p "$(dirname "$plist")"
+      local esc_path; esc_path=$(printf '%s' "$PATH" | sed 's/&/\&amp;/g; s/</\&lt;/g')
+      cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$label</string>
+  <key>ProgramArguments</key><array><string>/bin/bash</string><string>$entry</string><string>start</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>AbandonProcessGroup</key><true/>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>$esc_path</string><key>PORT</key><string>$port</string></dict>
+  <key>StandardOutPath</key><string>$state/autostart.log</string>
+  <key>StandardErrorPath</key><string>$state/autostart.log</string>
+</dict>
+</plist>
+PLIST
+      launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+      launchctl bootstrap "gui/$(id -u)" "$plist"
+      echo "devdeck will start when you log in ($plist)"
+      ;;
+    off)
+      launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+      rm -f "$plist"
+      echo "devdeck won't start at login any more (running now: unchanged)"
+      ;;
+    status) if [ -f "$plist" ]; then echo "on ($plist)"; else echo "off"; fi ;;
+    *) echo "usage: devdeck autostart on|off|status" >&2; exit 1 ;;
+  esac
+}
+
+# Claude Code hooks for exact status dots. Add them to the settings of each Claude config you use in devdeck
+# (~/.claude/settings.json, or $CLAUDE_CONFIG_DIR/settings.json). Without them, status is read off the screen.
+hooks() {
+  local h="$home/bin/devdeck-hook"
+  cat <<JSON
+{
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "$h idle" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "$h working" }] }],
+    "PreToolUse": [{ "hooks": [{ "type": "command", "command": "$h pretool" }] }],
+    "PostToolUse": [{ "hooks": [{ "type": "command", "command": "$h working" }] }],
+    "Notification": [{ "hooks": [{ "type": "command", "command": "$h notification" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "$h idle" }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "$h end" }] }]
+  }
+}
+JSON
+  echo "Merge the \"hooks\" above into your Claude settings.json, then restart Claude in your sessions." >&2
+}
+
+version() { sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "$here/package.json" | head -1; }
+
+# Homebrew brings the new version; the server restarts onto it (terminals keep running) and the app follows.
+update() {
+  case "$here" in
+    */Cellar/devdeck/*) ;;
+    *) echo "this devdeck runs from $here, not Homebrew: update it there (git pull)" >&2; exit 1 ;;
+  esac
+  local was; was=$(version)
+  brew update --quiet
+  brew upgrade devdeck
+  local now; now=$("$entry" version)
+  if [ "$now" = "$was" ]; then echo "devdeck $now is the latest"; else echo "devdeck $was → $now"; fi
+  if running; then "$entry" restart; fi
+  if [ -d /Applications/devdeck.app ]; then "$entry" desktop update; fi
+}
+
 case "${1:-start}" in
   start) start ;;
   stop) stop ;;
@@ -73,7 +160,12 @@ case "${1:-start}" in
   status) if running && up; then echo "running: $url (pid $(cat "$pidfile"))"; phone_url; else echo "not running"; exit 1; fi ;;
   logs) exec tail -n 50 -f "$log" ;;
   open) start >/dev/null; open "$url" ;;
-  run) need_node; exec node --experimental-strip-types --no-warnings "$here/src/server.ts" ;;
-  -h|--help|help) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) echo "usage: devdeck [start|stop|restart|status|logs|open|run]" >&2; exit 1 ;;
+  run) need_node; exec "$node" --experimental-strip-types --no-warnings "$here/src/server.ts" ;;
+  autostart) autostart "$2" ;;
+  hooks) hooks ;;
+  version|--version|-v) version ;;
+  update) update ;;
+  desktop) shift; exec "$node" --experimental-strip-types --no-warnings "$here/src/desktop.ts" "$@" ;;
+  -h|--help|help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) echo "usage: devdeck [start|stop|restart|status|logs|open|run|autostart|hooks|version|update|desktop]" >&2; exit 1 ;;
 esac

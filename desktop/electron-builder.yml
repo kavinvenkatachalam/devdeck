@@ -1,0 +1,24 @@
+# The devdeck app: a DMG for Apple Silicon. Its version isn't in package.json (0.0.0): the release passes it in,
+#   electron-builder --config.extraMetadata.version=<version>
+appId: dev.devdeck.app
+productName: devdeck
+directories:
+  buildResources: build
+  output: release
+files:
+  - main.js
+  - preload.js
+  - welcome.html
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  # No Apple Developer ID: `devdeck desktop install` puts the app in place, so macOS never asks about it. identity:
+  # null skips electron-builder's signing altogether; after-pack.js signs it ad hoc (Apple Silicon won't run an
+  # unsigned app).
+  identity: null
+afterPack: ./after-pack.js
+artifactName: "devdeck-desktop-${version}-${arch}.${ext}"
+npmRebuild: false
