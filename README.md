@@ -44,6 +44,10 @@ npm run check && npm test                       # type-check and tests
 
 To release, push a version tag: `git tag v0.5.1 && git push origin v0.5.1`. GitHub Actions builds devdeck and the app, publishes the release, and updates the Homebrew formula.
 
+## Credits
+
+Inspired by [HexoKit](https://github.com/sahil87/hexokit) by Sahil Ahuja.
+
 ## License
 
 MIT

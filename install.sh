@@ -4,6 +4,7 @@
 # Homebrew installs the devdeck command (with its Node and tmux); devdeck then starts, starts again whenever you log
 # in, and puts the devdeck app in /Applications and opens it. Run it again any time: it updates what's there.
 # Everything is in functions and runs from the last line, so a download cut short runs nothing.
+# Adapted from HexoKit's installer (https://github.com/sahil87/hexokit, MIT, Copyright (c) 2026 Sahil Ahuja).
 set -eu
 
 TAP=kavinvenkatachalam/tap

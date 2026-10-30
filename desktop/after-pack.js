@@ -1,6 +1,7 @@
 // electron-builder's afterPack hook: sign the packed app ad hoc, before it goes into the DMG. With identity: null
 // electron-builder signs nothing, and Apple Silicon won't launch an unsigned app (`devdeck desktop install` also
-// checks this signature before installing).
+// checks this signature before installing). Adapted from HexoKit (https://github.com/sahil87/hexokit, MIT,
+// Copyright (c) 2026 Sahil Ahuja).
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 
