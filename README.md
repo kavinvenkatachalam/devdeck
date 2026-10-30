@@ -24,7 +24,6 @@ curl -fsSL https://raw.githubusercontent.com/kavinvenkatachalam/devdeck/main/ins
 This installs devdeck with Homebrew (along with Node and tmux), starts it now and at every login, and opens the devdeck app.
 
 | | |
-|---|---|
 | **Update** | *Update* in the sidebar, or *Restart to Update* in the app menu, shows up when a new version is out. Or run `devdeck update`. |
 | **Phone** | Settings → Phone access. Needs Tailscale on the Mac and the phone. |
 | **Uninstall** | `devdeck autostart off; devdeck stop; devdeck desktop uninstall; brew uninstall devdeck` |
