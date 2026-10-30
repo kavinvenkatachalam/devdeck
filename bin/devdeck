@@ -33,16 +33,15 @@ need_node() {
     { echo "devdeck needs Node 22.6+ (found $("$node" -v))" >&2; exit 1; }
 }
 
-# The phone reaches devdeck through Tailscale on :8444 (never the tailnet's main URL, which HexoKit uses).
+# The phone reaches devdeck through Tailscale on :8444 (never the tailnet's main URL, which HexoKit uses). Sharing is
+# yours to turn on (Settings → Phone access): this only prints the link once it's shared.
 phone_url() {
   command -v tailscale >/dev/null || return 0
+  tailscale serve status 2>/dev/null | grep -q ":8444" || return 0
   local host
   host=$(tailscale status --json 2>/dev/null | "$node" -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const j=JSON.parse(d);if(j.BackendState==="Running")console.log(j.Self.DNSName.replace(/\.$/,""))}catch{}})')
-  [ -n "$host" ] || return 0
-  if ! tailscale serve status 2>/dev/null | grep -q ":8444"; then
-    tailscale serve --bg --https=8444 "http://localhost:$port" >/dev/null 2>&1 || return 0
-  fi
-  echo "phone: https://$host:8444"
+  [ -n "$host" ] && echo "phone: https://$host:8444"
+  return 0
 }
 
 start() {

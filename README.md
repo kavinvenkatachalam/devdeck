@@ -21,7 +21,7 @@ On a Mac with Apple Silicon:
 curl -fsSL https://raw.githubusercontent.com/kavinvenkatachalam/devdeck/main/install.sh | sh
 ```
 
-This installs devdeck with Homebrew (along with Node and tmux), starts it now and at every login, and opens the devdeck app.
+This installs devdeck with Homebrew (along with Node and tmux), starts it, and opens the devdeck app. To start it whenever you log in: `devdeck autostart on`.
 
 | Task | How |
 |---|---|

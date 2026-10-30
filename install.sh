@@ -1,8 +1,9 @@
 #!/bin/sh
 # Installs devdeck, or brings it up to date:
 #   curl -fsSL https://raw.githubusercontent.com/kavinvenkatachalam/devdeck/main/install.sh | sh
-# Homebrew installs the devdeck command (with its Node and tmux); devdeck then starts, starts again whenever you log
-# in, and puts the devdeck app in /Applications and opens it. Run it again any time: it updates what's there.
+# Homebrew installs the devdeck command (with its Node and tmux); devdeck then starts, and the devdeck app goes in
+# /Applications and opens. It doesn't start at login unless you ask (devdeck autostart on): the app offers to start
+# it. Run this again any time: it updates what's there.
 # Everything is in functions and runs from the last line, so a download cut short runs nothing.
 # Adapted from HexoKit's installer (https://github.com/sahil87/hexokit, MIT, Copyright (c) 2026 Sahil Ahuja).
 set -eu
@@ -55,13 +56,13 @@ main() {
   devdeck=$("$BREW" --prefix)/bin/devdeck
   done_ "devdeck $("$devdeck" version)"
 
-  "$devdeck" autostart on >/dev/null
   if "$devdeck" status >/dev/null 2>&1; then "$devdeck" restart; else "$devdeck" start; fi
-  done_ "devdeck is running, and starts when you log in"
+  done_ "devdeck is running"
 
   say "Installing the devdeck app"
   "$devdeck" desktop install --open
   done_ "All set: the devdeck app is in your Applications folder"
+  echo "To start devdeck whenever you log in: devdeck autostart on"
 }
 
 main "$@"
