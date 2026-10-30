@@ -12,7 +12,8 @@ import { alive, capture, CmdError, killGroup, owned, procStart, startDetached } 
 import { STATE_ROOT } from './state.ts';
 import { cleanEnv } from './tmux.ts';
 
-const PORT = Number(process.env.DEVDECK_CODE_PORT || 4318);
+// next to devdeck's own port (4318 beside 4317), so a second devdeck on another port brings its own
+const PORT = Number(process.env.DEVDECK_CODE_PORT || Number(process.env.PORT || 4317) + 1);
 const DIR = join(STATE_ROOT, 'code-server');
 const RUN = join(DIR, 'run.json');
 

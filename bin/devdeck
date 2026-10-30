@@ -18,9 +18,12 @@ entry="${DEVDECK_ENTRY:-$home/bin/devdeck}"
 # Homebrew's devdeck brings its own Node, so the node in your PATH (and your terminals') stays yours
 node="${DEVDECK_NODE:-node}"
 state="${XDG_STATE_HOME:-$HOME/.local/state}/devdeck"
-pidfile="$state/devdeck.pid"
-log="$state/devdeck.log"
 port="${PORT:-4317}"
+# Another port is another devdeck beside this one (a checkout under test, say): its own pid file and log. Sessions,
+# settings and state stay shared.
+suffix=; [ "$port" = 4317 ] || suffix="-$port"
+pidfile="$state/devdeck$suffix.pid"
+log="$state/devdeck$suffix.log"
 url="http://127.0.0.1:$port"
 mkdir -p "$state"
 
