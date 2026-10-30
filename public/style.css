@@ -169,8 +169,19 @@ kbd { font: 10.5px var(--font); padding: 0 5px; border-radius: 4px; background: 
 .side-body { flex: 1; overflow-y: auto; padding: 0 8px 14px; }
 .side-foot { padding: 6px 8px 10px; display: grid; gap: 1px; flex: none; }
 .nav-row { position: relative; display: flex; align-items: center; gap: 9px; height: 30px; padding: 0 8px; border-radius: var(--r); color: var(--muted); width: 100%; }
-.nav-row.update-row { color: var(--accent); font-weight: 600; }
-.nav-row.update-row:disabled { opacity: .75; cursor: default; }
+/* a newer devdeck (app.js): a small card above Theme, the whole of it the button */
+.update-card { display: flex; align-items: center; gap: 10px; width: 100%; margin: 6px 0 2px; padding: 8px 10px 8px 8px; text-align: left; border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border)); background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 13%, var(--panel)), var(--panel) 75%);
+  box-shadow: var(--shadow-sm); transition: border-color .15s, box-shadow .15s, transform .15s; }
+.update-card:hover:not(:disabled) { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 18%, transparent); transform: translateY(-1px); }
+.update-card:disabled { cursor: default; }
+.update-badge { display: grid; place-items: center; width: 28px; height: 28px; flex: none; border-radius: 50%; background: var(--accent); color: var(--on-accent, #fff);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent); }
+.update-text { display: grid; gap: 1px; min-width: 0; flex: 1; }
+.update-text b { font-size: 12.5px; color: var(--text); }
+.update-text span { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.update-go { color: var(--muted); flex: none; transition: transform .15s, color .15s; }
+.update-card:hover .update-go { color: var(--accent); transform: translateX(2px); }
 .nav-row:hover { background: var(--hover); color: var(--text); }
 .nav-row.sel { background: var(--row-sel); color: var(--sel-text); font-weight: 600; box-shadow: 0 0 0 1px var(--row-sel-ring), var(--shadow-sm); }
 .nav-n { margin-left: auto; font-size: 11px; color: var(--subtle); font-weight: 500; }

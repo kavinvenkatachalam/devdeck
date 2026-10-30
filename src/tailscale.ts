@@ -21,15 +21,17 @@ export async function tailscaleStatus(localPort: number) {
   }
   const host = (self.DNSName || '').replace(/\.$/, '');
   const serve = await ts('serve', 'status', '--json');
-  let shared = false;
+  // the local port :8444 leads to: this devdeck's, or another one's (a second devdeck beside it)
+  let to: number | undefined;
   try {
     const web = JSON.parse(serve.out || '{}').Web ?? {};
     const handlers = web[`${host}:${SHARE_PORT}`]?.Handlers ?? {};
-    shared = Object.values(handlers).some((h: any) => String(h?.Proxy ?? '').endsWith(`:${localPort}`));
+    to = Object.values(handlers).map((h: any) => Number(/:(\d+)\/?$/.exec(String(h?.Proxy ?? ''))?.[1])).find(Boolean);
   } catch {
     /* no serve config */
   }
-  return { installed: true, running: state === 'Running', host, shared, url: host ? `https://${host}:${SHARE_PORT}` : undefined };
+  const shared = to === localPort;
+  return { installed: true, running: state === 'Running', host, shared, sharedTo: !shared ? to : undefined, url: host ? `https://${host}:${SHARE_PORT}` : undefined };
 }
 
 export async function shareOnTailnet(localPort: number) {

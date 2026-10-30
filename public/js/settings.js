@@ -169,7 +169,8 @@ export function SettingsView({ onSaved }) {
           ${!ts ? html`<span class="muted">Checking…</span>` : !ts.installed ? html`<span class="muted">Install Tailscale on the Mac and the phone and sign in to the same account.</span>` : html`
             <dl class="kv"><dt>URL</dt><dd>${ts.url ? html`<span class="mono ellipsis">${ts.url}</span><${Copy} text=${ts.url} />` : '—'}</dd><dt>Shared</dt><dd>${ts.shared ? 'Yes' : 'No'}</dd></dl>
             ${!ts.running && html`<span class="small muted">Turn Tailscale on in the menu bar first.</span>`}
-            ${!ts.shared && html`<div class="row wrap"><button class="btn sm" disabled=${!ts.running} onClick=${share}>Share on port 8444</button><span class="small muted">Leaves your main tailnet URL (HexoKit) alone.</span></div>`}`}
+            ${ts.sharedTo ? html`<span class="small muted">The phone link goes to the devdeck on port ${ts.sharedTo}, not this one.</span>`
+              : !ts.shared && html`<div class="row wrap"><button class="btn sm" disabled=${!ts.running} onClick=${share}>Share on port 8444</button><span class="small muted">Only your Tailscale account can open it. It uses its own port, so your tailnet's main address stays free.</span></div>`}`}
           <dl class="kv"><dt>App</dt><dd>${install.installed ? html`<span class="ok-text">Installed</span>`
             : install.ready ? html`<button class="btn sm primary" onClick=${install.run}><${Icon} name="smartphone" cls="sm" />Install devdeck</button>`
             : html`<span class="small muted">${isIOS() ? 'In Safari: Share → Add to Home Screen' : 'Open devdeck on the phone, then Install from here or from the browser menu (Add to Home screen)'}</span>`}</dd></dl>

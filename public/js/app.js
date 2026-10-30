@@ -220,9 +220,13 @@ function App() {
           <button class=${`nav-row ${view === 'tools' ? 'sel' : ''}`} onClick=${() => show('tools')}><${Icon} name="wrench" />Tools</button>
           <button class=${`nav-row ${view === 'settings' ? 'sel' : ''}`} onClick=${() => show('settings')}><${Icon} name="settings" />Settings</button>
           ${host?.update?.available && html`
-            <button class="nav-row update-row" disabled=${updating || host.update.updating} onClick=${update} title=${`devdeck ${host.version} → ${host.update.available}`}>
-              <${Icon} name=${updating || host.update.updating ? 'loader-circle' : 'arrow-down'} cls=${updating || host.update.updating ? 'spin' : ''} />
-              ${updating || host.update.updating ? 'Updating…' : `Update to ${host.update.available}`}
+            <button class=${`update-card ${updating || host.update.updating ? 'busy' : ''}`} disabled=${updating || host.update.updating} onClick=${update}>
+              <span class="update-badge"><${Icon} name=${updating || host.update.updating ? 'loader-circle' : 'arrow-down'} cls=${`sm ${updating || host.update.updating ? 'spin' : ''}`} /></span>
+              <span class="update-text">
+                <b>${updating || host.update.updating ? 'Updating…' : 'Update available'}</b>
+                <span>${updating || host.update.updating ? 'devdeck will restart' : `${host.version.split('-')[0]} → ${host.update.available}`}</span>
+              </span>
+              ${!(updating || host.update.updating) && html`<${Icon} name="chevron-right" cls="sm update-go" />`}
             </button>`}
           <div class="theme-row"><span>Theme</span><${ThemeSwitch} /></div>
         </div>
