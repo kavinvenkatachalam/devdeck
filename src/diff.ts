@@ -2,7 +2,8 @@
 // (server/ee, frontend/ee) and untracked files, so it matches what a PR would show.
 import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { defaultBase } from './repo.ts';
+import { prBase } from './prs.ts';
+import { defaultBase, type Repo } from './repo.ts';
 import { capture } from './sh.ts';
 import { loadState } from './state.ts';
 
@@ -53,13 +54,25 @@ async function untracked(root: string): Promise<DiffFile[]> {
   return out;
 }
 
+// What the checkout's current branch is compared with: its PR's target, as GitHub shows the PR; else what devdeck
+// created it from (only while that branch is still checked out: a checkout can switch branches); else the default branch.
+export async function branchBase(repo: Repo, main: string) {
+  const has = async (ref: string) => (await capture('git', ['rev-parse', '-q', '--verify', ref], { cwd: repo.root })).code === 0;
+  const pr = repo.branch ? await prBase(main, repo.branch) : undefined;
+  if (pr && (await has(`origin/${pr}`))) return `origin/${pr}`;
+  const s = loadState(repo.root);
+  // an existing remote branch is recorded with itself as its base: that's not what it was branched from
+  if (s.base && s.branch === repo.branch && s.base !== `origin/${repo.branch}` && (await has(s.base))) return s.base;
+  return defaultBase(repo.root);
+}
+
 export async function diff(root: string, mode: 'uncommitted' | 'branch', baseArg?: string) {
   const flags = ['--no-color', '--no-ext-diff', '--submodule=diff', '-M', '-U3'];
   let base: string | undefined;
   let commits: { sha: string; subject: string }[] = [];
   let against = 'HEAD';
   if (mode === 'branch') {
-    base = baseArg || loadState(root).base || (await defaultBase(root));
+    base = baseArg || (await defaultBase(root));
     const mb = await gitOut(root, ['merge-base', 'HEAD', base]);
     if (!mb) return { mode, base, error: `no common history with ${base}`, files: [], commits };
     against = mb;

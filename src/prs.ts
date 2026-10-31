@@ -159,6 +159,12 @@ export async function refreshPr(repo: string, branch: string) {
   await refresh(key, repo, branch);
 }
 
+// The branch a branch's PR merges into (open, merged or closed), for the branch diff. Asks GitHub when not known yet.
+export async function prBase(repo: string, branch: string) {
+  await refreshPr(repo, branch);
+  return cache.get(`${repo}\0${branch}`)?.value?.base;
+}
+
 // Reload: which branches are pushed (git, local), then every branch's PR afresh from GitHub, all at once.
 // Branches pushed since are asked about by the list that follows (first sight).
 export async function refreshPrs() {

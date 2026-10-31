@@ -6,9 +6,9 @@ import pty from 'node-pty';
 import { WebSocketServer } from 'ws';
 import { refuse, tailnetIdentity } from './access.ts';
 import { claudeAccounts, onUsageChange, setUsage } from './claude.ts';
-import { codeStatus, proxyHttp, proxyUpgrade, setCodeTheme, startCodeServer } from './codeserver.ts';
+import { codeStatus, proxyHttp, proxyUpgrade, setCodeTheme, startCodeServer, stopCodeServer } from './codeserver.ts';
 import { applyLicense, envDetails, envStatus, isConfigured, ports, REMOVE_STEPS, removeWorktree, SETUP_START_STEPS, SETUP_STEPS, setup, start, START_STEPS, stop, STOP_STEPS } from './devenv.ts';
-import { diff } from './diff.ts';
+import { branchBase, diff } from './diff.ts';
 import { getJob, startJob } from './jobs.ts';
 import { listening } from './net.ts';
 import { discover, forgetStats, openable, projects, real, refreshAllStats, refreshStats } from './projects.ts';
@@ -21,7 +21,7 @@ import { expandHome, loadSettings, saveSettings } from './settings.ts';
 import { capture, CmdError, run, stripAnsi, tail } from './sh.ts';
 import { logFile, pastRuns, STATE_ROOT, updateState } from './state.ts';
 import { shareOnTailnet, tailscaleStatus } from './tailscale.ts';
-import { cleanEnv, createSession, killSession, listSessions, moveSession, oneTerminalEach, orderSessions, renameSession, reply, safeName, scrubServerEnv, setFolder, tmux, tmuxArgs, VIEWER_SEP, withAgents } from './tmux.ts';
+import { cleanEnv, createSession, killSession, listSessions, moveSession, paneProgram, oneTerminalEach, orderSessions, renameSession, reply, safeName, scrubServerEnv, setFolder, tmux, tmuxArgs, VIEWER_SEP, withAgents } from './tmux.ts';
 import { tools } from './workspace.ts';
 
 const HOST = process.env.HOST || '127.0.0.1';
@@ -469,7 +469,9 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       const repo = await repoAt(folderArg(q('path')));
       if (!repo) throw new HttpError(400, 'not a git checkout');
       refreshStats(repo.root);
-      return send(res, 200, await diff(repo.root, q('mode') === 'branch' ? 'branch' : 'uncommitted', q('base') || undefined));
+      const mode = q('mode') === 'branch' ? 'branch' : 'uncommitted';
+      const base = q('base') || (mode === 'branch' ? await branchBase(repo, real(repo.main)) : undefined);
+      return send(res, 200, await diff(repo.root, mode, base));
     }
 
     // ⟳ in the header: PRs from GitHub, change counts from git, then the page asks for the list again.
@@ -515,6 +517,24 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       return send(res, 202, startJob('code-server', 'Install code-server', [['install', 'brew install code-server']], (ctx) =>
         ctx.step('install', () => run('brew install code-server', 'brew', ['install', 'code-server'], { cwd: homedir(), env: cleanEnv(), log: logFile('code-server', 'install'), onLine: ctx.log })),
       ));
+    }
+
+    // code-server crashing at start (its Homebrew node was left behind by a library upgrade): upgrade both, then the
+    // running one is stopped so the next open starts it afresh
+    case 'POST /code/repair': {
+      const s = await codeStatus();
+      if (!s.brew) throw new HttpError(400, 'Homebrew not found');
+      const formulas = [s.node, 'code-server'].filter(Boolean);
+      const opts = { cwd: homedir(), env: cleanEnv(), log: logFile('code-server', 'repair') };
+      return send(res, 202, startJob('code-server', 'Repair code-server', [['update', 'brew update'], ['upgrade', `brew upgrade ${formulas.join(' ')}`], ['restart', 'Restart code-server']], async (ctx) => {
+        await ctx.step('update', () => run('brew update', 'brew', ['update'], { ...opts, onLine: ctx.log }));
+        await ctx.step('upgrade', () => run('brew upgrade', 'brew', ['upgrade', ...formulas], { ...opts, onLine: ctx.log }));
+        await ctx.step('restart', async () => {
+          await stopCodeServer();
+          const after = await codeStatus();
+          if (after.broken) throw new CmdError(`code-server still can't start: ${after.broken}`, `try: brew reinstall ${formulas.join(' ')}`);
+        });
+      }));
     }
 
     // ----- tailscale & settings -----
@@ -667,7 +687,81 @@ wss.on('connection', async (ws, url: URL) => {
     }
     else if (inMode === '1') await tmux('send-keys', '-X', '-t', viewer, '-N', String(n), 'scroll-down');
   };
-  ws.on('close', () => term.kill());
+  // Search: tmux's own copy-mode search, so it covers the whole history (the browser terminal only holds the screen)
+  // and tmux highlights the matches. A new word searches up from the bottom; up / down step through the matches; end
+  // goes back to the live screen. The reply says how many there are.
+  let lastDir = 'up';
+  const find = async (q: string, dir: string) => {
+    const inMode = (await tmux('display-message', '-p', '-t', viewer, '#{pane_in_mode}')).trim() === '1';
+    if (dir === 'end') {
+      if (inMode) await tmux('send-keys', '-X', '-t', viewer, 'cancel');
+      scrolledBack = false;
+      return;
+    }
+    if (!q) return;
+    scrolledBack = true;
+    if (dir === 'new' || !inMode) {
+      await tmux('copy-mode', '-t', viewer, ';', 'send-keys', '-X', '-t', viewer, 'history-bottom', ';', 'send-keys', '-X', '-t', viewer, 'end-of-line', ';', 'send-keys', '-X', '-t', viewer, 'search-backward-text', q);
+      lastDir = 'up';
+    } else {
+      // tmux leaves the cursor on a match's start going up and on its end going down, so the first step the other way
+      // finds the same match again: turning around takes two
+      const steps = dir === lastDir ? '1' : '2';
+      await tmux('send-keys', '-X', '-N', steps, '-t', viewer, dir === 'up' ? 'search-backward-text' : 'search-forward-text', q);
+      lastDir = dir;
+    }
+    const [count, partial] = (await tmux('display-message', '-p', '-t', viewer, '#{search_count} #{search_count_partial}')).trim().split(' ');
+    if (ws.readyState === ws.OPEN) ws.send(Buffer.from(JSON.stringify({ found: Number(count) || 0, more: partial === '1' })));
+  };
+  // Split panes are tmux's, so every device sees the same layout and a border drag resizes them. Split, the window
+  // gets a header line over each pane (tmux's pane-border-status); the browser draws a pane's title and buttons on it.
+  // A pane's own buttons act on that pane; closing one that runs something (Claude, a server) asks first.
+  const pane = async (m: { do?: string; pane?: string; force?: boolean }) => {
+    const ids = (await tmux('list-panes', '-t', viewer, '-F', '#{pane_id}')).split('\n').filter(Boolean);
+    const target = m.pane && ids.includes(m.pane) ? m.pane : viewer; // only this window's panes
+    if (m.do === 'right' || m.do === 'down') await tmux('split-window', m.do === 'right' ? '-h' : '-v', '-t', target, '-c', '#{pane_current_path}');
+    else if (m.do === 'focus') await tmux('select-pane', '-t', target);
+    else if (m.do === 'close' && ids.length > 1) {
+      const busy = m.force ? '' : await paneProgram(target);
+      if (busy) return ws.readyState === ws.OPEN && ws.send(Buffer.from(JSON.stringify({ busy, pane: target })));
+      await tmux('kill-pane', '-t', target);
+    }
+    await layout();
+  };
+  // The panes' places on the grid, sent when they change: checked after pane actions and resizes, and at most once a
+  // second while output flows (a pane that exits, a border drag, a click to another pane all redraw). Nothing when idle.
+  const BORDERS = ['pane-border-lines', 'single', 'pane-border-style', 'fg=colour240', 'pane-active-border-style', 'fg=#6366f1', 'pane-border-format', ''];
+  let sentLayout = '';
+  const layout = async (): Promise<void> => {
+    const out = (await tmux('list-panes', '-t', viewer, '-F', '#{pane_id}\t#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}\t#{pane_active}\t#{pane_current_command}\t#{b:pane_current_path}\t#{?#{==:#{pane_title},#{host}},,#{pane_title}}\t#{pane-border-status}')).trim();
+    const rows = out.split('\n').map((l) => l.split('\t'));
+    const header = rows.length > 1 ? 'top' : 'off';
+    if (rows[0]?.[9] !== header) {
+      const set = ['set-option', '-w', '-t', viewer, 'pane-border-status', header];
+      for (let i = 0; i < BORDERS.length; i += 2) set.push(';', 'set-option', '-w', '-t', viewer, BORDERS[i], BORDERS[i + 1]);
+      await tmux(...set);
+      return layout(); // the header line moves every pane down a row
+    }
+    if (out === sentLayout || ws.readyState !== ws.OPEN) return;
+    sentLayout = out;
+    const panes = rows.length > 1 ? rows.map(([id, x, y, w, h, active, command, dir, title]) => ({ id, x: +x, y: +y, w: +w, h: +h, active: active === '1', command: /^\d+\.\d+\.\d+/.test(command) ? 'claude' : command, dir, title })) : [];
+    ws.send(Buffer.from(JSON.stringify({ panes })));
+  };
+  let layoutTimer: NodeJS.Timeout | undefined;
+  let layoutAt = 0;
+  const layoutSoon = () => {
+    if (layoutTimer) return;
+    layoutTimer = setTimeout(() => {
+      layoutTimer = undefined;
+      layoutAt = Date.now();
+      later(layout);
+    }, Math.max(150, 1000 - (Date.now() - layoutAt)));
+  };
+  term.onData(layoutSoon);
+  ws.on('close', () => {
+    clearTimeout(layoutTimer);
+    term.kill();
+  });
   onMessage = (raw) => {
     let m;
     try {
@@ -690,8 +784,13 @@ wss.on('connection', async (ws, url: URL) => {
       // confirmed once written (after a scroll back is undone)
       if (id) later(() => ws.readyState === ws.OPEN && ws.send(Buffer.from(JSON.stringify({ ack: seq }))));
     }
-    else if (m.t === 'r') term.resize(Math.max(2, Number(m.c) || 80), Math.max(2, Number(m.r) || 24));
+    else if (m.t === 'r') {
+      term.resize(Math.max(2, Number(m.c) || 80), Math.max(2, Number(m.r) || 24));
+      layoutSoon();
+    }
     else if (m.t === 'w') tmux('select-window', '-t', `${viewer}:${Number(m.w)}`).catch(() => {});
+    else if (m.t === 'f') later(() => find(String(m.q || '').slice(0, 200), String(m.dir)));
+    else if (m.t === 'p') later(() => pane({ do: String(m.do), pane: typeof m.pane === 'string' ? m.pane : undefined, force: !!m.force }));
     else if (m.t === 's') {
       lines += Math.max(-500, Math.min(500, Math.trunc(Number(m.n)) || 0));
       at = `${Math.max(1, Math.trunc(Number(m.x)) || 1)};${Math.max(1, Math.trunc(Number(m.y)) || 1)}`;
