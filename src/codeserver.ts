@@ -2,7 +2,7 @@
 // so it works through the same Tailscale URL as devdeck. Not bundled (it's large): install via brew.
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { request } from 'node:http';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { connect } from 'node:net';
 import type { Duplex } from 'node:stream';
@@ -176,10 +176,34 @@ function syncExtensions(bin: string) {
   return syncing;
 }
 
+// code-server runs on a Homebrew node (its script's #! line). A library that node links to can be upgraded without a
+// rebuilt node, and node then crashes as it starts (node@22 built for simdjson 5.0.5 did, on 5.0.7): the editor still
+// loads, but its terminals, extensions and file watching all fail. `--version` shows it in a fraction of a second.
+async function brokenBy(bin: string) {
+  const r = await capture(bin, ['--version'], { cwd: '/', env: cleanEnv() });
+  return r.code === 0 ? '' : (r.err || r.out).split('\n').slice(-3).join('\n') || `code-server --version crashed (exit ${r.code})`;
+}
+
+// The Homebrew formula of that node (node@22), to upgrade along with code-server.
+export function codeNode(bin: string) {
+  try {
+    return /\/opt\/([^/\s]+)\/bin\/node\b/.exec(readFileSync(realpathSync(bin), 'utf8').split('\n')[0])?.[1] ?? '';
+  } catch {
+    return '';
+  }
+}
+
+// After a repair: the running one goes, so the next open starts it on the repaired node.
+export async function stopCodeServer() {
+  const run = readRun();
+  if (await owned(run)) await killGroup(run!.pid);
+}
+
 export async function codeStatus() {
   const bin = await findCodeServer();
   const run = readRun();
   const running = (await owned(run)) && (await listening(PORT));
+  const broken = bin ? await brokenBy(bin) : '';
   const profile = bin ? prepareProfile() : { vscode: false, linked: [] };
   if (running) syncExtensions(bin)?.catch(() => {}); // picks up extensions added to your editor since
   return {
@@ -187,6 +211,8 @@ export async function codeStatus() {
     bin,
     running,
     stale: running && run?.v !== LAUNCH_VERSION,
+    broken,
+    node: bin ? codeNode(bin) : '',
     port: PORT,
     brew: existsSync('/opt/homebrew/bin/brew') || existsSync('/usr/local/bin/brew'),
     profile,
@@ -198,6 +224,7 @@ export async function startCodeServer() {
   if (s.running && !s.stale) return s;
   if (s.running) await killGroup(readRun()!.pid); // started with older flags
   if (!s.installed) throw new CmdError('code-server is not installed', 'install it from the Code tab, or: brew install code-server');
+  if (s.broken) throw new CmdError(`code-server can't start: ${s.broken}`, `repair it from the Code tab, or: brew update && brew upgrade ${s.node || 'node'} code-server`);
   if (await listening(PORT)) throw new CmdError(`port ${PORT} is already in use`, 'set DEVDECK_CODE_PORT to another port');
   mkdirSync(DIR, { recursive: true });
   prepareProfile();

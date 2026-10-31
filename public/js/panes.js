@@ -93,20 +93,28 @@ export function CodePane({ path, active }) {
     setErr(null);
     try { const r = await call('POST', '/code/install'); if (r.id) setJobId(r.id); else setSt(r); } catch (e) { setErr(e); }
   };
+  const repair = async () => {
+    setErr(null);
+    try { setJobId((await call('POST', '/code/repair')).id); } catch (e) { setErr(e); }
+  };
   const vscode = async () => {
     setErr(null);
     try { await call('POST', '/open/vscode', { path }); toast('Opened in VS Code on the Mac'); } catch (e) { setErr(e); }
   };
   // your editor's settings and extensions come along on their own (see codeserver.ts); full screen is in the ⋯ menu
-  if (st?.running && !st.stale && active)
+  if (st?.running && !st.stale && !st.broken && active)
     return html`<div class="code-frame"><iframe key=${path} src=${codeUrl(path)} title="Code" allow="clipboard-read; clipboard-write"></iframe></div>`;
   return html`
     <div class="empty"><div class="empty-box" style="max-width:380px">
       <div class="empty-ic"><${Icon} name="code-xml" /></div>
-      <h2>Browse & edit the code</h2>
-      <p>${st && !st.installed ? 'VS Code in the browser needs code-server, a one-time install.' : 'VS Code in the browser, on the Mac or your phone.'}</p>
+      <h2>${st?.broken ? 'code-server needs a repair' : 'Browse & edit the code'}</h2>
+      <p>${st?.broken ? `It crashes as it starts, so its terminal, extensions and git don't work. Usually Homebrew upgraded a library its ${st.node || 'node'} uses; upgrading ${st.node || 'node'} and code-server fixes it.`
+        : st && !st.installed ? 'VS Code in the browser needs code-server, a one-time install.' : 'VS Code in the browser, on the Mac or your phone.'}</p>
+      ${st?.broken && html`<pre class="small muted" style="text-align:left;white-space:pre-wrap">${st.broken}</pre>`}
       <div class="row wrap" style="justify-content:center">
-        ${!st ? html`<span class="muted">Loading…</span>` : st.installed
+        ${!st ? html`<span class="muted">Loading…</span>` : st.broken
+          ? html`<button class="btn primary" disabled=${!st.brew || !!jobId} onClick=${repair}><${Icon} name="wrench" />Repair</button>`
+          : st.installed
           ? html`<button class="btn primary" disabled=${busy} onClick=${start}><${Icon} name="play" />${busy ? 'Starting…' : 'Open in browser'}</button>`
           : html`<button class="btn primary" disabled=${!st.brew || !!jobId} onClick=${install}><${Icon} name="package" />Install code-server</button>`}
         <button class="btn hide-phone" onClick=${vscode}><${Icon} name="monitor" />VS Code on this Mac</button>

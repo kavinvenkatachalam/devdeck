@@ -19,7 +19,8 @@ export type Agent = 'working' | 'waiting' | 'idle';
 // A session is one terminal: one tmux window (`tabs` always holds just that one).
 // choices: the numbered options of a prompt that needs you ("1. Yes", "3. No…"), for one-tap replies.
 // pane: tmux's pane id (%12), which Claude's hooks report under (see bin/devdeck-hook).
-export type Tab = { id: string; pane: string; index: number; program: string; busy: boolean; active: boolean; agent?: Agent; choices?: string[] };
+// panes: how many the terminal is split into; pane is then the agent's (Claude beside a shell), else the focused one.
+export type Tab = { id: string; pane: string; panes: number; index: number; program: string; busy: boolean; active: boolean; agent?: Agent; choices?: string[] };
 
 const SHELLS = new Set(['zsh', 'bash', 'fish', 'sh']);
 
@@ -71,7 +72,7 @@ export async function listSessions(): Promise<Session[]> {
   let s: string, w: string;
   try {
     s = await tmux('list-sessions', '-F', '#{session_name}\t#{@dd_path}\t#{session_created}\t#{@dd_folder}\t#{@dd_order}');
-    w = await tmux('list-windows', '-a', '-F', '#{session_name}\t#{window_id}\t#{window_index}\t#{pane_current_command}\t#{window_active}\t#{window_activity}\t#{pane_tty}\t#{pane_id}');
+    w = await tmux('list-panes', '-a', '-F', '#{session_name}\t#{window_id}\t#{window_index}\t#{pane_current_command}\t#{window_active}\t#{window_activity}\t#{pane_tty}\t#{pane_id}\t#{pane_active}');
   } catch {
     return []; // no server yet
   }
@@ -80,16 +81,22 @@ export async function listSessions(): Promise<Session[]> {
     .map(([name, path, created, folder, order]): Session => ({ name, path, created: Number(created), activity: Number(created), folder: folder || '', order: Number(order) || 0, tabs: [] }));
   const byName = new Map(sessions.map((x) => [x.name, x]));
   const ttys = new Map<string, Tab>(); // shells, whose real foreground program is looked up below
-  for (const [sess, id, index, command, active, activity, tty, pane] of rows(w)) {
+  const windows = new Map<string, { session: Session; panes: { tab: Tab; focused: boolean }[] }>();
+  for (const [sess, id, index, command, active, activity, tty, pane, paneActive] of rows(w)) {
     const p = program(command);
     const x = byName.get(sess);
     if (!x) continue;
     x.activity = Math.max(x.activity, Number(activity) || 0);
-    const tab: Tab = { id, pane: pane || '', index: Number(index), program: p, busy: !SHELLS.has(p), active: active === '1' };
-    x.tabs.push(tab);
+    const tab: Tab = { id, pane: pane || '', panes: 1, index: Number(index), program: p, busy: !SHELLS.has(p), active: active === '1' };
+    if (!windows.has(id)) windows.set(id, { session: x, panes: [] });
+    windows.get(id)!.panes.push({ tab, focused: paneActive === '1' });
     if (SHELLS.has(p) && tty) ttys.set(tty.replace('/dev/', ''), tab);
   }
   await foreground(ttys);
+  for (const { session, panes } of windows.values()) {
+    const { tab } = panes.find((x) => AGENTS.has(x.tab.program)) ?? panes.find((x) => x.focused) ?? panes[0];
+    session.tabs.push({ ...tab, panes: panes.length });
+  }
   return sessions.sort((a, b) => a.created - b.created);
 }
 
@@ -113,6 +120,15 @@ async function foreground(ttys: Map<string, Tab>) {
     const p = progs.find((x) => AGENTS.has(x)) ?? progs[0];
     if (p) Object.assign(tab, { program: p, busy: true });
   }
+}
+
+// What runs in front in one pane ('' for a bare shell), the way the session list sees it: Claude under an alias too.
+export async function paneProgram(pane: string) {
+  const [command, tty] = (await tmux('display-message', '-p', '-t', pane, '#{pane_current_command}\t#{pane_tty}')).trim().split('\t');
+  const p = program(command);
+  const tab = { program: p, busy: !SHELLS.has(p) } as Tab;
+  if (!tab.busy && tty) await foreground(new Map([[tty.replace('/dev/', ''), tab]]));
+  return tab.busy ? tab.program : '';
 }
 
 // Both TUIs show a working line while a turn runs (see WORKING), and a numbered prompt when they
@@ -151,7 +167,7 @@ export function combine(hook: Agent | undefined, screen: Screen): Pick<Tab, 'age
 
 async function agentState(t: Tab): Promise<Pick<Tab, 'agent' | 'choices'>> {
   try {
-    return combine(t.program === 'claude' && t.pane ? hookState(t.pane) : undefined, readScreen(await tmux('capture-pane', '-p', '-t', t.id)));
+    return combine(t.program === 'claude' && t.pane ? hookState(t.pane) : undefined, readScreen(await tmux('capture-pane', '-p', '-t', t.pane || t.id)));
   } catch {
     return {}; // pane went away
   }
@@ -210,8 +226,12 @@ export async function withAgents(sessions: Session[]) {
   return sessions;
 }
 
-// A one-tap reply to a prompt: an option's number, or Escape to cancel.
-export const reply = (windowId: string, key: string) => tmux('send-keys', '-t', windowId, key);
+// A one-tap reply to a prompt: an option's number, or Escape to cancel. It goes to the agent's pane, which in a split
+// terminal needn't be the focused one.
+export async function reply(windowId: string, key: string) {
+  const tab = (await listSessions()).flatMap((s) => s.tabs).find((t) => t.id === windowId);
+  await tmux('send-keys', '-t', tab?.pane || windowId, key);
+}
 
 export const safeName = (s: string) => s.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
 

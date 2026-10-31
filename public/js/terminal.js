@@ -1,6 +1,6 @@
 // The terminal (xterm over a WebSocket to tmux), the phone compose box, quick replies and the folder tabs above it.
 import { html, useEffect, useLayoutEffect, useRef, useState } from '/vendor/preact.js';
-import { ErrorBox, Icon, InlineEdit, call, copy, isDark, onKeyboard, onThemeChange, phone, qs, store, toast, ui } from './lib.js';
+import { ErrorBox, Icon, InlineEdit, ask, call, copy, isDark, onKeyboard, onThemeChange, phone, qs, store, toast, ui } from './lib.js';
 import { AGENT, confirmEnd, leadTab, renameSessionTo, sessionHere, tabDot } from './model.js';
 
 // ---------- terminal ----------
@@ -76,15 +76,19 @@ async function uploadFiles(files) {
   return paths;
 }
 
-function Terminal({ session, tabIndex, sendRef, onGone, small, autofocus = true }) {
+function Terminal({ session, tabIndex, sendRef, ctlRef, onGone, small, autofocus = true }) {
   const el = useRef();
   const wsRef = useRef();
   const termRef = useRef();
   const [dropping, setDropping] = useState(false);
+  const [finding, setFinding] = useState(false);
+  const [found, setFound] = useState(null); // { found, more }: tmux's count of matches
+  const [panes, setPanes] = useState([]); // a split terminal's panes, on tmux's grid (see the server); [] unsplit
   // Input is numbered and kept until the server confirms it (see the effect); the server writes each number once.
   const unacked = useRef([]);
   const inputId = useRef(Math.random().toString(36).slice(2));
   const inputSeq = useRef(0);
+  const paneRef = useRef(() => {});
   const putFiles = async (files) => {
     if (!files.length) return;
     try {
@@ -146,6 +150,12 @@ function Terminal({ session, tabIndex, sendRef, onGone, small, autofocus = true 
         navigator.clipboard?.writeText(term.getSelection()).then(() => toast('Copied'), () => {});
         return false;
       }
+      // ⌘F searches the history; ⌘D / ⇧⌘D split the terminal right / down (as in iTerm)
+      if (e.metaKey && !e.ctrlKey && !e.altKey && (e.key === 'f' || e.key.toLowerCase() === 'd')) {
+        e.preventDefault();
+        if (e.type === 'keydown') e.key === 'f' ? setFinding(true) : send({ t: 'p', do: e.shiftKey ? 'down' : 'right' });
+        return false;
+      }
       // ⇧Enter = a new line in Claude / Codex: send ESC+Enter like Claude's /terminal-setup does (xterm sends a plain Enter)
       if (e.key === 'Enter' && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
         if (e.type === 'keydown') send({ t: 'i', d: '\x1b\r' });
@@ -190,8 +200,11 @@ function Terminal({ session, tabIndex, sendRef, onGone, small, autofocus = true 
       };
       sock.onmessage = (e) => {
         if (typeof e.data === 'string') return term.write(e.data);
-        const { ack } = JSON.parse(new TextDecoder().decode(e.data));
-        unacked.current = unacked.current.filter((m) => m.seq > ack);
+        const reply = JSON.parse(new TextDecoder().decode(e.data));
+        if ('found' in reply) return setFound(reply);
+        if ('panes' in reply) return setPanes(reply.panes);
+        if ('busy' in reply) return confirmClose(reply);
+        unacked.current = unacked.current.filter((m) => m.seq > reply.ack);
       };
       // Dropped: reconnect on its own, soon at first.
       sock.onclose = (e) => {
@@ -211,6 +224,13 @@ function Terminal({ session, tabIndex, sendRef, onGone, small, autofocus = true 
       type(d);
       if (focus) term.focus();
     };
+    // search and split, from the frame's buttons and the panes' own (tmux does them: see the server)
+    const pane = (what, id, force) => { send({ t: 'p', do: what, pane: id, force }); term.focus(); };
+    paneRef.current = pane;
+    const confirmClose = async ({ busy, pane: id }) => {
+      if (await ask({ title: `Close this pane?`, body: `${busy} is running in it, and will be ended.`, ok: 'Close pane', danger: true })) pane('close', id, true);
+    };
+    if (ctlRef) ctlRef.current = { find: () => setFinding(true), pane };
     const watchdog = setInterval(() => {
       if (ws?.readyState === WebSocket.OPEN) for (const m of unacked.current) if (!m.at) deliver(m); // queued while it was down
       const m = unacked.current[0];
@@ -454,11 +474,71 @@ function Terminal({ session, tabIndex, sendRef, onGone, small, autofocus = true 
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'w', w: tabIndex }));
   }, [tabIndex]);
 
+  const find = (q, dir) => wsRef.current?.readyState === WebSocket.OPEN && wsRef.current.send(JSON.stringify({ t: 'f', q, dir }));
+  const endFind = () => {
+    find('', 'end');
+    setFinding(false);
+    setFound(null);
+    termRef.current?.focus();
+  };
   return html`
     <div class=${`term ${dropping ? 'dropping' : ''}`} ref=${el}
       onDragOver=${(e) => { if (!hasFiles(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setDropping(true); }}
       onDragLeave=${(e) => { if (!el.current.contains(e.relatedTarget)) setDropping(false); }}
-      onDrop=${(e) => { if (!hasFiles(e)) return; e.preventDefault(); setDropping(false); putFiles([...e.dataTransfer.files]); }}></div>`;
+      onDrop=${(e) => { if (!hasFiles(e)) return; e.preventDefault(); setDropping(false); putFiles([...e.dataTransfer.files]); }}></div>
+    ${panes.length > 1 && html`<${PaneBars} panes=${panes} term=${termRef.current} box=${el.current} act=${(...a) => paneRef.current(...a)} />`}
+    ${finding && html`<${FindBar} found=${found} onFind=${find} onClose=${endFind} />`}`;
+}
+
+// A split terminal: over the header line tmux leaves above each pane, its name (the program's title, as Claude sets
+// it, else the program and folder) and its own buttons. Clicking a header puts that pane in focus.
+function PaneBars({ panes, term, box, act }) {
+  const screen = term?.element?.querySelector('.xterm-screen');
+  if (!screen || !box) return null;
+  const r = screen.getBoundingClientRect();
+  const card = box.parentElement.getBoundingClientRect();
+  const [w, h] = [r.width / term.cols, r.height / term.rows];
+  const [x0, y0] = [r.left - card.left, r.top - card.top - box.scrollTop];
+  const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
+  return panes.map((p) => html`
+    <div class=${`pane-bar ${p.active ? 'on' : ''}`} key=${p.id} onClick=${() => act('focus', p.id)}
+      style=${`left:${x0 + p.x * w}px;top:${y0 + (p.y - 1) * h}px;width:${p.w * w}px;height:${h}px`}>
+      <span class="ellipsis">${p.title || html`${p.command}<span class="pane-dir"> · ${p.dir}</span>`}</span>
+      <span class="grow"></span>
+      <button title="Split right" onClick=${stop(() => act('right', p.id))}><${Icon} name="columns-2" cls="xs" /></button>
+      <button title="Split down" onClick=${stop(() => act('down', p.id))}><${Icon} name="rows-2" cls="xs" /></button>
+      <button class="pane-x" title="Close pane" onClick=${stop(() => act('close', p.id))}><${Icon} name="x" cls="xs" /></button>
+    </div>`);
+}
+
+// Search the terminal's whole history (tmux searches it and highlights the matches; see the server). Typing searches up
+// from the bottom; Enter / ↑ goes to the older match, ⇧Enter / ↓ to the newer one; Esc goes back to the live screen.
+function FindBar({ found, onFind, onClose }) {
+  const input = useRef();
+  const [q, setQ] = useState('');
+  const typing = useRef(0);
+  useEffect(() => { input.current?.focus(); return () => clearTimeout(typing.current); }, []);
+  const change = (v) => {
+    setQ(v);
+    clearTimeout(typing.current);
+    typing.current = setTimeout(() => (v ? onFind(v, 'new') : onFind('', 'end')), 150);
+  };
+  const step = (dir) => q && onFind(q, dir);
+  const count = !q || !found ? '' : found.found ? `${found.found}${found.more ? '+' : ''} found` : 'No results';
+  return html`
+    <div class="findbar" onKeyDown=${(e) => {
+      if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+      else if (e.key === 'Enter') { e.preventDefault(); step(e.shiftKey ? 'down' : 'up'); }
+      else if (e.key === 'f' && e.metaKey) { e.preventDefault(); input.current.select(); }
+    }}>
+      <${Icon} name="search" cls="sm" />
+      <input ref=${input} value=${q} placeholder="Search history" onInput=${(e) => change(e.target.value)}
+        autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+      <span class=${`small ${found && !found.found && q ? 'find-none' : 'muted'}`}>${count}</span>
+      <button class="icon-btn sm" title="Older (Enter)" disabled=${!q} onClick=${() => step('up')}><${Icon} name="arrow-up" cls="sm" /></button>
+      <button class="icon-btn sm" title="Newer (⇧Enter)" disabled=${!q} onClick=${() => step('down')}><${Icon} name="arrow-down" cls="sm" /></button>
+      <button class="icon-btn sm" title="Close (Esc)" onClick=${onClose}><${Icon} name="x" cls="sm" /></button>
+    </div>`;
 }
 
 const KEYS = [
@@ -577,7 +657,7 @@ export function Replies({ t, refresh }) {
 
 // The sessions of the open one's sidebar folder (or those outside folders), as tabs to hop between (⌘/⌃1–9); + adds one,
 // ✕ ends one, double-click renames. Each is still its own session: this is only navigation.
-function FolderTabs({ s, siblings, refresh, openSession, onRenamed }) {
+function FolderTabs({ s, siblings, refresh, openSession, onRenamed, ctlRef }) {
   const [editing, setEditing] = useState(null);
   if (!siblings.length) return null;
   const close = async (e, x) => {
@@ -608,20 +688,27 @@ function FolderTabs({ s, siblings, refresh, openSession, onRenamed }) {
           </div>`;
       })}
       <button class="icon-btn sm" title=${s.folder ? `New session in ${s.folder}` : 'New session here'} onClick=${() => sessionHere(s, refresh, openSession)}><${Icon} name="plus" cls="sm" /></button>
+      <span class="grow"></span>
+      <div class="term-acts">
+        <button class="icon-btn sm" title="Search (⌘F)" onClick=${() => ctlRef.current?.find()}><${Icon} name="search" cls="sm" /></button>
+        <button class="icon-btn sm hide-phone" title="Split right (⌘D)" onClick=${() => ctlRef.current?.pane('right')}><${Icon} name="columns-2" cls="sm" /></button>
+        <button class="icon-btn sm hide-phone" title="Split down (⇧⌘D)" onClick=${() => ctlRef.current?.pane('down')}><${Icon} name="rows-2" cls="sm" /></button>
+      </div>
     </div>`;
 }
 
 // The session's terminal, framed: the folder's sessions as tabs on top, one-tap replies when an agent asks.
 export function TerminalPane({ s, siblings, refresh, openSession, onRenamed }) {
   const sendRef = useRef(() => {});
+  const ctlRef = useRef(null);
   const t = s.tabs[0];
   if (!t) return null;
   return html`
     <div class="term-unit">
-      <${FolderTabs} s=${s} siblings=${siblings} refresh=${refresh} openSession=${openSession} onRenamed=${onRenamed} />
+      <${FolderTabs} s=${s} siblings=${siblings} refresh=${refresh} openSession=${openSession} onRenamed=${onRenamed} ctlRef=${ctlRef} />
       <${Replies} t=${t} refresh=${refresh} />
       <div class="term-card">
-        <${Terminal} key=${s.name} session=${s.name} tabIndex=${t.index} sendRef=${sendRef} onGone=${refresh} />
+        <${Terminal} key=${s.name} session=${s.name} tabIndex=${t.index} sendRef=${sendRef} ctlRef=${ctlRef} onGone=${refresh} />
       </div>
     </div>
     <div class="keys">${KEYS.map(([l, seq]) => html`<button onPointerDown=${(e) => e.preventDefault()} onClick=${() => sendRef.current(seq, !phone())}>${l}</button>`)}</div>
