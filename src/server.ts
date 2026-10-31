@@ -8,6 +8,7 @@ import { refuse, tailnetIdentity } from './access.ts';
 import { claudeAccounts, onUsageChange, setUsage } from './claude.ts';
 import { codeStatus, proxyHttp, proxyUpgrade, setCodeTheme, startCodeServer, stopCodeServer } from './codeserver.ts';
 import { applyLicense, envDetails, envStatus, isConfigured, ports, REMOVE_STEPS, removeWorktree, SETUP_START_STEPS, SETUP_STEPS, setup, start, START_STEPS, stop, STOP_STEPS } from './devenv.ts';
+import { sessionArtifacts, withArtifacts } from './artifacts.ts';
 import { branchBase, diff } from './diff.ts';
 import { getJob, startJob } from './jobs.ts';
 import { listening } from './net.ts';
@@ -175,7 +176,7 @@ function projectsShared(roots: string[]) {
     roots: key,
     done: 0,
     value: (async () => {
-      const sessions = await withAgents(await sessionList());
+      const sessions = await withAgents(await withArtifacts(await sessionList()));
       return { ...(await projects(roots, sessions)), folders: folders(sessions), locked: lockedFolders() };
     })(),
   };
@@ -194,7 +195,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
   switch (route) {
     // ----- sessions & tabs -----
     case 'GET /sessions':
-      return send(res, 200, await withAgents(await sessionList()));
+      return send(res, 200, await withAgents(await withArtifacts(await sessionList())));
 
     case 'GET /projects':
       return send(res, 200, await projectsShared(settings.roots));
@@ -310,6 +311,12 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       const lines = Math.min(Math.max(Number(q('lines')) || 1000, 50), 5000);
       const text = await tmux('capture-pane', '-p', '-J', '-S', String(-lines), '-t', s.tabs[0].id);
       return send(res, 200, { text: text.replace(/\s+$/, '') });
+    }
+
+    case 'GET /sessions/:/artifacts': {
+      const s = (await listSessions()).find((x) => x.name === parts[1]);
+      if (!s?.tabs[0]) throw new HttpError(404, 'no such session');
+      return send(res, 200, { artifacts: await sessionArtifacts(s) });
     }
 
     case 'POST /tabs/:/reply': {

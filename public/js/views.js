@@ -1,6 +1,6 @@
 // Screens: a session, a worktree, the overview and the worktrees list.
 import { html, useEffect, useState } from '/vendor/preact.js';
-import { TopBar, useLens } from './chrome.js';
+import { ArtifactList, TopBar, useLens } from './chrome.js';
 import { EnvButtons, EnvPane, removeWorktree, useEnvControls } from './env.js';
 import { Copy, Icon, MenuButton, Section, ago, call, copy, isHome, phone, plural, reloadAll, shortPath, store, toast, ui } from './lib.js';
 import { AGENT, AgentLabel, PrBadge, PrCard, checkoutsOf, coTitle, confirmEnd, leadTab, prBlock, prLook, prStatus, renameFolderTo, renameSessionTo, serverState, sessionHere, tabDot, whereOf } from './model.js';
@@ -18,11 +18,15 @@ const phoneDetails = ({ co, ec, pick, openWorktree }) => phone() ? [
   '-',
 ] : [];
 
+// Preview with the app showing gives it the whole height (the top bar waits above: see .immersive). Not before the
+// app runs: then the bar, its tabs and Start stay put.
+const immersive = (cur, ec) => cur === 'preview' && ec.env?.services?.frontend?.state === 'running';
+
 // A session: terminal tabs in some folder, plus the folder's git and ToolJet tools when it has them.
 export function SessionView({ s, co, siblings, refresh, onBack, openWorktree, openSession, onRenamed, goHome }) {
   // Changes needs git; Code opens any folder (except your whole home folder)
   // (no Code on the phone: VS Code is a heavy first load over a slow link, and hard to use on a phone keyboard)
-  const lenses = [['terminal', 'Terminal', 'terminal'], s.git && ['changes', 'Changes', 'file-diff'], !isHome(s.path) && !phone() && ['code', 'Code', 'code-xml'], co?.tooljet && !phone() && ['preview', 'Preview', 'app-window'], co?.tooljet && ['env', 'Env', 'server']].filter(Boolean);
+  const lenses = [['terminal', 'Terminal', 'terminal'], s.git && ['changes', 'Changes', 'file-diff'], !isHome(s.path) && !phone() && ['code', 'Code', 'code-xml'], co?.tooljet && !phone() && ['preview', 'Preview', 'app-window'], s.artifacts > 0 && ['artifacts', 'Artifacts', 'layers'], co?.tooljet && ['env', 'Env', 'server']].filter(Boolean);
   const [cur, pick, visited] = useLens(`lens.s.${s.name}`, lenses.map(([id]) => id), 'terminal');
   const ec = useEnvControls(co, cur === 'env' || cur === 'preview');
   const [renaming, setRenaming] = useState(false);
@@ -50,6 +54,7 @@ export function SessionView({ s, co, siblings, refresh, onBack, openWorktree, op
     co?.tooljet && !ec.anyUp && { icon: 'play', label: ec.env?.ready ? 'Start servers' : 'Set up & start servers', run: () => ec.act('start') && pick('env') },
     co?.tooljet && ec.anyUp && { icon: 'square', label: 'Stop servers', run: () => ec.act('stop') },
     '-',
+    !phone() && { icon: 'rotate-cw', label: 'Reload pull requests and changes', run: reloadAll },
     !isHome(s.path) && !phone() && { icon: 'external-link', label: 'Open code in a new tab', run: () => window.open(codeUrl(s.path), '_blank', 'noopener') },
     !isHome(s.path) && { icon: 'monitor', label: 'Open in VS Code on the Mac', run: () => vscode(s.path) },
     { icon: 'copy', label: 'Copy folder path', run: () => copy(s.path) },
@@ -69,8 +74,8 @@ export function SessionView({ s, co, siblings, refresh, onBack, openWorktree, op
   ].filter(Boolean);
 
   return html`
-    <div class=${`view ${cur === 'preview' ? 'immersive' : ''}`}>
-      ${cur === 'preview' && html`<div class="top-reveal" aria-hidden="true"></div>`}
+    <div class=${`view ${immersive(cur, ec) ? 'immersive' : ''}`}>
+      ${immersive(cur, ec) && html`<div class="top-reveal" aria-hidden="true"></div>`}
       <${TopBar} onBack=${onBack} crumbs=${crumbs} title=${s.name} lenses=${lenses} cur=${cur} pick=${pick} changes=${changes}
         sub=${co ? html`<button class="crumb" onClick=${() => openWorktree(co.path)}><${Icon} name="git-branch" cls="sm" />${coTitle(co)}<${Icon} name="chevron-right" cls="sm" /></button>${co.pr && html`<${PrBadge} pr=${co.pr} link />`}` : shortPath(s.path)}>
         ${co?.tooljet && ec.st && html`<button class=${`pill ${ec.st.cls} only-phone`} onClick=${() => pick('env')}><span class=${`dot ${ec.st.cls || 'off'}`}></span></button>`}
@@ -82,6 +87,7 @@ export function SessionView({ s, co, siblings, refresh, onBack, openWorktree, op
       ${cur === 'changes' && html`<div class="pane"><${ChangesPane} path=${s.path} /></div>`}
       <div class="pane" hidden=${cur !== 'code'}>${visited.code && html`<${CodePane} path=${s.path} active=${cur === 'code'} />`}</div>
       <div class="pane" hidden=${cur !== 'preview'}>${visited.preview && co?.tooljet && html`<${PreviewPane} key=${co.path} ec=${ec} active=${cur === 'preview'} />`}</div>
+      ${cur === 'artifacts' && html`<div class="pane"><div class="scroll"><div class="stack" style="max-width:760px"><div class="card"><div class="card-b tight"><${ArtifactList} name=${s.name} /></div></div></div></div></div>`}
       ${envActive && html`<div class="pane"><${EnvPane} c=${co} env=${ec.env} reload=${ec.reload} jobId=${ec.jobId} setJobId=${ec.setJobId} onRemoved=${() => toast('Worktree removed')} removeDiscard=${() => removeWorktree(co, ec, true)} /></div>`}
     </div>`;
 }
@@ -106,6 +112,7 @@ export function WorktreeView({ c, sessions, refresh, onBack, openSession, goHome
     c.tooljet && !ec.anyUp && { icon: 'play', label: ec.env?.ready ? 'Start servers' : 'Set up & start servers', run: () => ec.act('start') && pick('env') },
     c.tooljet && ec.anyUp && { icon: 'square', label: 'Stop servers', run: () => ec.act('stop') },
     '-',
+    !phone() && { icon: 'rotate-cw', label: 'Reload pull requests and changes', run: reloadAll },
     !phone() && { icon: 'external-link', label: 'Open code in a new tab', run: () => window.open(codeUrl(c.path), '_blank', 'noopener') },
     { icon: 'monitor', label: 'Open in VS Code on the Mac', run: () => vscode(c.path) },
     { icon: 'copy', label: 'Copy path', run: () => copy(c.path) },
@@ -113,8 +120,8 @@ export function WorktreeView({ c, sessions, refresh, onBack, openSession, goHome
     !c.main && { icon: 'trash-2', label: 'Remove worktree', danger: true, run: async () => (await removeWorktree(c, ec, false)) && c.tooljet && pick('env') },
   ];
   return html`
-    <div class=${`view ${cur === 'preview' ? 'immersive' : ''}`}>
-      ${cur === 'preview' && html`<div class="top-reveal" aria-hidden="true"></div>`}
+    <div class=${`view ${immersive(cur, ec) ? 'immersive' : ''}`}>
+      ${immersive(cur, ec) && html`<div class="top-reveal" aria-hidden="true"></div>`}
       <${TopBar} onBack=${onBack} crumbs=${[{ label: c.project, icon: 'folder-git-2', go: goHome }, { label: coTitle(c), icon: 'git-branch' }]}
         title=${coTitle(c)} sub=${`${c.project} · ${shortPath(c.path)}`} lenses=${lenses} cur=${cur} pick=${pick} changes=${c.stats?.changes || 0}>
         ${c.tooljet && ec.st && html`<span class=${`pill ${ec.st.cls} only-phone`}><span class=${`dot ${ec.st.cls || 'off'}`}></span></span>`}

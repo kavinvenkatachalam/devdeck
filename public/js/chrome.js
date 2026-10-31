@@ -1,6 +1,6 @@
 // Top bar, status bar, ⌘K palette and the lens tabs (Terminal / Changes / Code / Env).
 import { html, useEffect, useRef, useState } from '/vendor/preact.js';
-import { Icon, InlineEdit, keyLabel, keyMods, placeKey, plural, shortPath, store, toast, ui } from './lib.js';
+import { Copy, Icon, InlineEdit, ago, call, keyLabel, keyMods, placeKey, plural, shortPath, store, toast, ui } from './lib.js';
 import { AGENT, AgentLabel, leadTab, prLook, serverState } from './model.js';
 
 // ---------- top & status bars ----------
@@ -71,10 +71,29 @@ export function TopBar({ onBack, crumbs, title, sub, lenses, cur, pick, changes,
         ${lenses?.length > 1 && html`<div class="lens-group">${lenses.map(([id, label, icon], i) => html`
           <button class=${`lens has-tip ${cur === id ? 'sel' : ''}`} aria-label=${label} onClick=${() => go(id)}><${Icon} name=${icon} cls="sm" />${badge(id)}
             <${Tip} text=${label} keys=${keyLabel(keyMods().views, i + 1)} /></button>`)}</div>`}
-        <${ReloadButton} />
-        <button class="icon-btn palette-btn has-tip" aria-label="Go to a session or worktree" onClick=${() => ui.palette()}><${Icon} name="command" cls="sm" /><${Tip} text="Go to a session or worktree" keys="⌘K" /></button>
+        ${!lenses && html`<${ReloadButton} />
+        <button class="icon-btn palette-btn has-tip" aria-label="Go to a session or worktree" onClick=${() => ui.palette()}><${Icon} name="command" cls="sm" /><${Tip} text="Go to a session or worktree" keys="⌘K" /></button>`}
       </div>
     </header>`;
+}
+
+// The claude.ai pages and documents Claude made (or opened) in a session, newest first (see artifacts.ts).
+export function ArtifactList({ name }) {
+  const [list, setList] = useState(null);
+  const [err, setErr] = useState(null);
+  useEffect(() => { call('GET', `/sessions/${encodeURIComponent(name)}/artifacts`).then((r) => setList(r.artifacts), setErr); }, [name]);
+  if (err) return html`<div class="arts-empty">${err.message}</div>`;
+  if (!list) return html`<div class="arts-empty">Loading…</div>`;
+  if (!list.length) return html`<div class="arts-empty">No artifacts in this session yet.</div>`;
+  return html`<div class="arts">${list.map((a) => html`
+    <div class="art-row">
+      <a class="art" href=${a.url} target="_blank" rel="noopener" title=${a.url}>
+        <span class="art-ic"><${Icon} name="layers" cls="sm" /></span>
+        <span class="art-t"><b class="ellipsis">${a.title || 'Untitled artifact'}</b><span class="ellipsis">${a.at ? `${ago(a.at / 1000)} · ` : ''}${a.url.replace('https://', '')}</span></span>
+        <${Icon} name="external-link" cls="sm" />
+      </a>
+      <${Copy} text=${a.url} />
+    </div>`)}</div>`;
 }
 
 const gb = (n) => `${(n / 2 ** 30).toFixed(n >= 100 * 2 ** 30 ? 0 : 1)}G`;
