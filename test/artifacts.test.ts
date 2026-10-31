@@ -32,3 +32,10 @@ test('artifacts come from what Claude published, updated, opened or made as a do
   const a = artifactsIn(log).find((x) => x.url === A)!;
   assert.deepEqual([a.title, a.at], ['First page v2', Date.parse('2026-10-31T11:00:00Z')]);
 });
+
+test('a log longer than one read piece (4 MB), with characters split across pieces, still gives its artifacts', () => {
+  const log = join(mkdtempSync(join(tmpdir(), 'dd-')), 'big.jsonl');
+  const filler = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: '✳ ⧉ é '.repeat(2000) }] } });
+  writeFileSync(log, `${Array(400).fill(filler).join('\n')}\n${use('9', 'Artifact', { action: 'publish' })}\n${result('9', '2026-10-31T12:00:00Z', { url: B, title: 'After ✳ the filler' })}\n`);
+  assert.deepEqual(artifactsIn(log).map((a) => [a.url, a.title]), [[B, 'After ✳ the filler']]);
+});

@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { promisify } from 'node:util';
 import { STATE_ROOT } from './state.ts';
 import { tmux, type Session } from './tmux.ts';
@@ -45,12 +46,13 @@ const FILE = join(STATE_ROOT, 'conversations.json');
 let seen: Record<string, string[]> | undefined;
 const seenLogs = (): Record<string, string[]> => (seen ??= (() => { try { return JSON.parse(readFileSync(FILE, 'utf8')); } catch { return {}; } })());
 
-// Each log is read once, then only what Claude appended since.
-type Read = { offset: number; tail: string; uses: Map<string, { name: string; input: any }>; found: Map<string, Artifact> };
+// Each log is read once, then only what Claude appended since; in 4 MB pieces, so a long log never sits in memory whole.
+const CHUNK = 4 << 20;
+type Read = { offset: number; tail: string; dec: StringDecoder; uses: Map<string, { name: string; input: any }>; found: Map<string, Artifact> };
 const reads = new Map<string, Read>();
 export function artifactsIn(log: string): Artifact[] {
   let r = reads.get(log);
-  if (!r) reads.set(log, (r = { offset: 0, tail: '', uses: new Map(), found: new Map() }));
+  if (!r) reads.set(log, (r = { offset: 0, tail: '', dec: new StringDecoder('utf8'), uses: new Map(), found: new Map() }));
   let fd: number;
   try {
     fd = openSync(log, 'r');
@@ -59,12 +61,11 @@ export function artifactsIn(log: string): Artifact[] {
   }
   try {
     const size = fstatSync(fd).size;
-    if (size < r.offset) Object.assign(r, { offset: 0, tail: '', uses: new Map(), found: new Map() }); // rewritten
-    if (size > r.offset) {
-      const buf = Buffer.alloc(size - r.offset);
-      readSync(fd, buf, 0, buf.length, r.offset);
-      r.offset = size;
-      const lines = (r.tail + buf.toString('utf8')).split('\n');
+    if (size < r.offset) Object.assign(r, { offset: 0, tail: '', dec: new StringDecoder('utf8'), uses: new Map(), found: new Map() }); // rewritten
+    while (size > r.offset) {
+      const buf = Buffer.allocUnsafe(Math.min(CHUNK, size - r.offset));
+      r.offset += readSync(fd, buf, 0, buf.length, r.offset);
+      const lines = (r.tail + r.dec.write(buf)).split('\n');
       r.tail = lines.pop() ?? '';
       // only the requests to make one and the replies with a link are worth parsing (logs run to tens of MB)
       for (const line of lines) if (line.includes('"name":"Artifact"') || line.includes('Claude_Docs__batch') || line.includes('claude.ai/')) take(r, line);
@@ -124,8 +125,7 @@ async function claudesByWindow() {
   return out;
 }
 
-// Note the conversations running now: in the background, at most every 4 s, so the session list never waits on it
-let last = 0;
+// Note the conversations running now: in the background, so the session list never waits on it
 async function noteConversations() {
   const all = seenLogs();
   let changed = false;
@@ -138,10 +138,14 @@ async function noteConversations() {
   if (changed) try { writeFileSync(FILE, JSON.stringify(all)); } catch { /* next time */ }
 }
 
-// Each session's artifact count (what Claude's logs say; reading them again is only what was appended)
-export async function withArtifacts(sessions: Session[]) {
-  if (Date.now() - last > 4000) {
-    last = Date.now();
+// Each session's artifact count (what Claude's logs say; reading them again is only what was appended). Which
+// conversation each Claude is on is looked up only when a Claude starts or ends somewhere, or finishes a turn (after
+// a /clear, the next turn is the new conversation's): no timer.
+let claudes = '';
+export async function withArtifacts(sessions: Session[], ended: Set<string>) {
+  const now = sessions.filter((s) => s.tabs.some((t) => t.program === 'claude')).map((s) => s.tabs[0].id).join();
+  if (now !== claudes || ended.size) {
+    claudes = now;
     noteConversations().catch(() => {});
   }
   const all = seenLogs();

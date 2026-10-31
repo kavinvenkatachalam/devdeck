@@ -2,7 +2,7 @@
 // the TUIs draw them; when a new Claude version changes its screen, add the new one here.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { combine, readAgent, readScreen } from '../src/tmux.ts';
+import { combine, readAgent, readScreen, turnsEnded } from '../src/tmux.ts';
 
 const RULE = '─'.repeat(60);
 const box = (above: string[]) => [...above, '', RULE, '❯ ', RULE, '  ? for shortcuts'].join('\n');
@@ -71,4 +71,15 @@ test('the screen corrects what hooks miss: Esc on a prompt, Esc during a turn', 
   assert.deepEqual(combine('waiting', readScreen(IDLE)), { agent: 'idle' });
   // turn interrupted: Stop doesn't run, "Interrupted" sits over the input box
   assert.deepEqual(combine('working', readScreen(INTERRUPTED)), { agent: 'idle' });
+});
+
+test('a turn ends when an agent goes from working to idle or waiting, once', () => {
+  const at = (agent?: 'working' | 'idle' | 'waiting') => [{ name: 'zz-turn', path: '/x', created: 0, activity: 0, folder: '', order: 0, tabs: [{ id: '@1', pane: '%1', panes: 1, index: 0, program: 'claude', busy: true, active: true, agent }] }];
+  assert.equal(turnsEnded(at('idle')).size, 0);
+  assert.equal(turnsEnded(at('working')).size, 0);
+  assert.equal(turnsEnded(at('working')).size, 0, 'still working');
+  assert.deepEqual([...turnsEnded(at('idle'))], ['zz-turn']);
+  assert.equal(turnsEnded(at('idle')).size, 0, 'only the moment it ends');
+  turnsEnded(at('working'));
+  assert.deepEqual([...turnsEnded(at('waiting'))], ['zz-turn'], 'stopping to ask you counts too');
 });

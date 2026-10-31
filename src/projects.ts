@@ -68,16 +68,16 @@ async function isGit(path: string) {
   return gitCache.get(path)!;
 }
 
-// git status / ahead-behind are slow on big repos (~0.2 s of CPU each in ToolJet): serve the last value and
-// refresh in the background, every 30 s where you're working (a session or servers), every 10 min elsewhere.
-// Opening a worktree's changes, or reload (refreshAllStats), refreshes at once.
+// git status / ahead-behind are slow on big repos (~0.2 s of CPU each in ToolJet), so there's no timer: a checkout is
+// counted when first listed, then again only when something says it changed — a Claude in it finishing a turn
+// (refreshStatsUnder), opening its Changes, or ⟳ (refreshAllStats). The last value shows meanwhile.
 type Stats = { changes: number; ahead?: number; behind?: number };
 const statsCache = new Map<string, { at: number; value?: Stats; pending?: Promise<void> }>();
 
-function stats(path: string, active: boolean): Stats | undefined {
+function stats(path: string): Stats | undefined {
   if (activeJob(path)) return undefined; // mid-setup the tree is still being filled in; counts would be noise
   const c = statsCache.get(path) ?? { at: 0 };
-  if (!c.pending && Date.now() - c.at > (active ? 30_000 : 600_000)) {
+  if (!c.pending && !c.at) {
     c.pending = (async () => {
       const [dirty, counts] = await Promise.all([
         capture('git', ['status', '--porcelain', '--ignore-submodules=all'], { cwd: path }),
@@ -103,11 +103,17 @@ export const refreshStats = (path: string) => {
   if (c) c.at = 0;
 };
 
+// A session's Claude finished a turn: count the checkout it works in (the deepest one holding its folder) again.
+export function refreshStatsUnder(dir: string) {
+  const holder = [...statsCache.keys()].filter((p) => dir === p || dir.startsWith(`${p}/`)).sort((a, b) => b.length - a.length)[0];
+  if (holder) refreshStats(holder);
+}
+
 // Reload: every checkout's counts worked out now, and waited for.
 export async function refreshAllStats() {
   await Promise.all([...statsCache.keys()].map((path) => {
     refreshStats(path);
-    stats(path, true);
+    stats(path);
     return statsCache.get(path)?.pending;
   }));
 }
@@ -155,8 +161,7 @@ export async function projects(roots: string[], sessions: Session[]) {
         p.checkouts.map(async (c) => {
           const sessions = byCheckout.get(c.path) ?? [];
           const servers = p.tooljet ? await serversUp(c.path, !c.main) : undefined;
-          const active = sessions.length > 0 || !!(servers?.server || servers?.frontend);
-          return { ...c, sessions, servers, stats: stats(c.path, active), pr: prFor(p.path, c.branch, c.head) };
+          return { ...c, sessions, servers, stats: stats(c.path), pr: prFor(p.path, c.branch, c.head) };
         }),
       );
       const active = (c: (typeof checkouts)[number]) => Number(c.sessions.length > 0) + Number(!!(c.servers?.server || c.servers?.frontend));
