@@ -242,6 +242,10 @@ kbd { font: 10.5px var(--font); padding: 0 5px; border-radius: 4px; background: 
 .tt-match span { display: grid; place-items: center; width: 14px; height: 100%; }
 .working-dd { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .working-seg { flex-wrap: wrap; }
+.key-seg { flex-wrap: wrap; }
+.key-seg button { font-family: var(--mono); }
+.key-seg button:disabled { opacity: .4; cursor: not-allowed; }
+.key-seg .key-n { color: var(--subtle); font-size: 11px; }
 .working-seg button { min-width: 44px; justify-content: center; }
 .working-seg .wk { font-size: 15px; }
 .trow-st { font-size: 11.5px; white-space: nowrap; flex: none; font-weight: 500; }
@@ -320,12 +324,24 @@ body.dragging-session .trow.loose-end { display: flex; }
 .view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .top { display: flex; align-items: center; gap: 8px; height: 48px; padding: 0 10px 0 8px; border-bottom: 1px solid var(--border); background: transparent; flex: none; }
 /* the bar's own width (the sidebar takes some): first the extras go to icons, then the PR badge (it's in the footer) */
-.top { container-type: inline-size; }
+.top { container-type: inline-size; position: relative; z-index: 5; }
 @container (max-width: 1180px) {
-  .lens:not(.sel) .lens-label, .top .crumb-folder, .top .crumb-folder + .crumb-sep, .top-actions .btn-label { display: none; }
+  .top .crumb-folder, .top .crumb-folder + .crumb-sep, .top-actions .btn-label { display: none; }
   .top-actions .btn.sm:has(.btn-label) { width: 28px; padding: 0; justify-content: center; }
 }
-@container (max-width: 900px) { .top .lens-label, .top .top-pr { display: none; } }
+@container (max-width: 900px) { .top .top-pr { display: none; } }
+/* Preview gives the app the whole height: the bar waits above, and slides down when the pointer reaches the top edge
+   (the strip, marked by a short line) and stays while the pointer is on it */
+.top-reveal { display: none; }
+.view.immersive { position: relative; }
+.view.immersive > .top { position: absolute; inset: 0 0 auto; background: var(--panel); box-shadow: var(--shadow); transform: translateY(-100%); visibility: hidden;
+  transition: transform .15s ease .35s, visibility 0s .5s; }
+.view.immersive > .top-reveal { display: block; position: absolute; inset: 0 0 auto; height: 10px; z-index: 6; }
+.view.immersive > .top-reveal::after { content: ''; position: absolute; top: 3px; left: 50%; width: 40px; height: 4px; margin-left: -20px; border-radius: 2px; background: var(--border-strong); }
+.view.immersive:has(> .top-reveal:hover, > .top:hover, > .top:focus-within) > .top { transform: none; visibility: visible; transition: transform .15s ease .06s, visibility 0s; }
+.view.immersive:has(> .top:hover) > .top-reveal { pointer-events: none; }
+.view.immersive:has(> .top-reveal:hover, > .top:hover) > .top-reveal::after { opacity: 0; }
+.view.immersive .preview-bar { margin-top: 12px; }
 .back { display: none; }
 .crumbs { display: flex; align-items: center; gap: 2px; min-width: 0; flex: 1; overflow: hidden; }
 .crumb-sep { color: var(--border-strong); flex: none; padding: 0 2px; }
@@ -348,6 +364,18 @@ body.dragging-session .trow.loose-end { display: flex; }
 .seg button, .lens { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 7px; color: var(--muted); font-weight: 500; white-space: nowrap; font-size: 12.5px; position: relative; }
 .seg button:hover, .lens:hover { color: var(--text); }
 .seg button.sel, .lens.sel { color: var(--sel-text); background: var(--row-sel); box-shadow: var(--shadow-sm), 0 0 0 1px var(--seg-ring); }
+.lens { padding: 0 9px; }
+/* a lens's name and key, under it on hover (a beat late, so sweeping across doesn't flash them) */
+.has-tip { position: relative; }
+.has-tip .tip { position: absolute; top: calc(100% + 8px); left: 50%; transform: translate(-50%, -2px); display: flex; align-items: center; gap: 8px; white-space: nowrap;
+  padding: 5px 6px 5px 9px; border-radius: 7px; background: var(--raised); box-shadow: 0 0 0 1px var(--raised-border), var(--shadow); color: var(--text);
+  font-size: 12px; font-weight: 500; pointer-events: none; opacity: 0; transition: opacity .1s, transform .1s; z-index: 10; }
+.has-tip .tip kbd { font: 500 11px var(--mono); color: var(--muted); padding: 1px 5px; border-radius: 4px; background: var(--panel-2); }
+.has-tip:hover .tip { opacity: 1; transform: translate(-50%, 0); transition-delay: .25s; }
+/* at the bar's right end: open leftwards */
+.lens-group .lens:last-child .tip, .palette-btn .tip { left: auto; right: 0; transform: translateY(-2px); }
+.lens-group .lens:last-child:hover .tip, .palette-btn:hover .tip { transform: none; }
+@media (hover: none) { .has-tip .tip { display: none; } }
 .lens.sel .i { color: var(--accent); }
 .lens .n { font-size: 10.5px; color: var(--muted); }
 .theme-seg button { padding: 0 7px; height: 24px; }

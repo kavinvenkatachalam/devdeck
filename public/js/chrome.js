@@ -1,6 +1,6 @@
 // Top bar, status bar, ⌘K palette and the lens tabs (Terminal / Changes / Code / Env).
 import { html, useEffect, useRef, useState } from '/vendor/preact.js';
-import { Icon, InlineEdit, plural, shortPath, store, toast, ui } from './lib.js';
+import { Icon, InlineEdit, keyLabel, keyMods, placeKey, plural, shortPath, store, toast, ui } from './lib.js';
 import { AGENT, AgentLabel, leadTab, prLook, serverState } from './model.js';
 
 // ---------- top & status bars ----------
@@ -21,8 +21,29 @@ function ReloadButton() {
 
 // crumbs: [{ label, icon, go }] — the last one is the current place. On the phone: back + title + sub.
 // A crumb with `rename` renames in place on double-click (or when `editing` is set, e.g. from a menu).
+// ⌥1–9 (or the key set in Settings → Keyboard) picks a lens by its place, even from the terminal or the Code editor
+// (it's the same page, so its keys come here too). Leaving the terminal takes the keyboard from it, so typing doesn't
+// go on into a hidden terminal.
+const lensKeys = { current: null };
+const onLensKey = (e) => {
+  const n = placeKey(e, keyMods().views);
+  if (!n || !lensKeys.current?.(n)) return;
+  e.preventDefault();
+  e.stopPropagation();
+};
+addEventListener('keydown', onLensKey, true);
+export const lensKeysIn = (frame) => { try { frame.contentWindow.addEventListener('keydown', onLensKey, true); } catch {} };
+
+// a button's name (and its key) under it on hover; the button needs class has-tip
+const Tip = ({ text, keys }) => html`<span class="tip" aria-hidden="true">${text}${keys && html`<kbd>${keys}</kbd>`}</span>`;
+
 export function TopBar({ onBack, crumbs, title, sub, lenses, cur, pick, changes, children }) {
   const badge = (id) => id === 'changes' && changes > 0 && html`<span class="n">${changes}</span>`;
+  const go = (id) => {
+    pick(id);
+    setTimeout(() => (id === 'terminal' ? ui.focusTerm?.() : document.activeElement?.blur()));
+  };
+  lensKeys.current = lenses?.length > 1 ? (n) => !!lenses[n - 1] && (go(lenses[n - 1][0]), true) : null;
   const [editingAt, setEditingAt] = useState(null);
   const last = crumbs.map((x) => !x.node).lastIndexOf(true);
   const chip = (c, i) => {
@@ -47,10 +68,11 @@ export function TopBar({ onBack, crumbs, title, sub, lenses, cur, pick, changes,
       <div class="top-title"><h1><span>${title}</span></h1>${sub && html`<div class="top-sub">${sub}</div>`}</div>
       <div class="top-actions">
         ${children}
-        ${lenses?.length > 1 && html`<div class="lens-group">${lenses.map(([id, label, icon]) => html`
-          <button class=${`lens ${cur === id ? 'sel' : ''}`} title=${label} onClick=${() => pick(id)}><${Icon} name=${icon} cls="sm" /><span class="lens-label">${label}</span>${badge(id)}</button>`)}</div>`}
+        ${lenses?.length > 1 && html`<div class="lens-group">${lenses.map(([id, label, icon], i) => html`
+          <button class=${`lens has-tip ${cur === id ? 'sel' : ''}`} aria-label=${label} onClick=${() => go(id)}><${Icon} name=${icon} cls="sm" />${badge(id)}
+            <${Tip} text=${label} keys=${keyLabel(keyMods().views, i + 1)} /></button>`)}</div>`}
         <${ReloadButton} />
-        <button class="icon-btn palette-btn" title="Go to… (⌘K)" onClick=${() => ui.palette()}><${Icon} name="search" cls="sm" /></button>
+        <button class="icon-btn palette-btn has-tip" aria-label="Go to a session or worktree" onClick=${() => ui.palette()}><${Icon} name="command" cls="sm" /><${Tip} text="Go to a session or worktree" keys="⌘K" /></button>
       </div>
     </header>`;
 }

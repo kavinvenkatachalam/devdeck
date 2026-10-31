@@ -1,7 +1,7 @@
 // devdeck's page: the app shell, routing between screens, and the keyboard shortcuts.
 import { html, render, useEffect, useRef, useState } from '/vendor/preact.js';
 import { Palette, StatusBar, TopBar } from './chrome.js';
-import { Ask, DeckMark, Icon, MenuItems, Popover, THEMES, ThemeSwitch, applyTheme, ask, call, isIOS, phone, reloadAll, shortPath, store, toast, ui, useInstall, usePoll } from './lib.js';
+import { Ask, DeckMark, Icon, MenuItems, Popover, THEMES, ThemeSwitch, applyTheme, ask, call, isIOS, keyMods, phone, placeKey, reloadAll, shortPath, store, toast, ui, useInstall, usePoll } from './lib.js';
 import { AGENT, checkoutIndex, checkoutsOf, coTitle, leadTab, serverState, sessKey } from './model.js';
 import { SettingsView, ToolsView } from './settings.js';
 import { MoveSheet, NewSheet } from './sheets.js';
@@ -63,11 +63,11 @@ function App() {
   };
 
   // ⌘K opens the palette even while a terminal has focus (capture phase, before xterm sees the key);
-  // ⌘1–9 / ⌃1–9 jump to that tab of the folder (Chrome keeps ⌘1–9 for its own tabs outside the installed app)
+  // ⌘1–9 / ⌃1–9 (or the key set in Settings → Keyboard) jump to that tab of the folder
   useEffect(() => {
     const k = (e) => {
       if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === 'k') { e.preventDefault(); e.stopPropagation(); setPalette((v) => !v); }
-      else if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && /^[1-9]$/.test(e.key) && hop.current?.(Number(e.key))) { e.preventDefault(); e.stopPropagation(); }
+      else if (hop.current?.(placeKey(e, keyMods().sessions))) { e.preventDefault(); e.stopPropagation(); }
     };
     addEventListener('keydown', k, true);
     return () => removeEventListener('keydown', k, true);
@@ -113,7 +113,7 @@ function App() {
   const siblings = s ? data.sessions.filter((x) => (x.folder || '') === (s.folder || '')).sort((a, b) => sessKey(a) - sessKey(b)) : [];
   const hop = useRef();
   hop.current = (n) => {
-    const x = view === 'main' && siblings.length > 1 && siblings[n - 1];
+    const x = n && view === 'main' && siblings.length > 1 && siblings[n - 1];
     if (x && x.name !== s.name) openSession(x.name);
     return !!x;
   };

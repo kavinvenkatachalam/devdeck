@@ -41,6 +41,21 @@ export const store = {
   set: (k, v) => { try { localStorage.setItem(`devdeck.${k}`, JSON.stringify(v)); } catch {} },
 };
 
+// Shortcuts that pick by place, 1–9 (Settings → Keyboard): session tabs and the views (Terminal, Changes, Code…).
+// Each is one modifier (or none); ⌘ / ⌃ takes either, since Chrome keeps ⌘1–9 for its own tabs outside the app.
+export const KEY_MODS = {
+  'cmd-ctrl': { label: '⌘ / ⌃', uses: ['cmd', 'ctrl'], test: (e) => (e.metaKey || e.ctrlKey) && !e.altKey },
+  cmd: { label: '⌘', uses: ['cmd'], test: (e) => e.metaKey && !e.ctrlKey && !e.altKey },
+  ctrl: { label: '⌃', uses: ['ctrl'], test: (e) => e.ctrlKey && !e.metaKey && !e.altKey },
+  alt: { label: '⌥', uses: ['alt'], test: (e) => e.altKey && !e.metaKey && !e.ctrlKey },
+  'cmd-alt': { label: '⌥⌘', uses: ['cmd-alt'], test: (e) => e.altKey && e.metaKey && !e.ctrlKey },
+  off: { label: 'Off', uses: [], test: () => false },
+};
+export const keyMods = () => ({ sessions: 'cmd-ctrl', views: 'alt', ...store.get('keys', {}) });
+// the place (1–9) a key picks with this modifier, or 0 (the key's code: ⌥ changes what the key types)
+export const placeKey = (e, mod) => (!e.shiftKey && KEY_MODS[mod]?.test(e) && /^Digit[1-9]$/.test(e.code) ? Number(e.code.slice(5)) : 0);
+export const keyLabel = (mod, n) => (mod === 'off' ? '' : `${KEY_MODS[mod].label.split(' ')[0]}${n}`);
+
 export const shortPath = (p) => (p || '').replace(/^\/Users\/[^/]+/, '~');
 // the home folder (or /): too big to open as a code project
 export const isHome = (p) => ['~', '/'].includes(shortPath(p).replace(/\/$/, '') || '/');
