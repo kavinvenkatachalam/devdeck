@@ -11,7 +11,7 @@ const NAMES = [
   'git-pull-request', 'git-pull-request-draft', 'git-pull-request-closed', 'git-merge', 'circle-check', 'circle-x', 'clock',
   'pin', 'pin-off', 'sun', 'moon', 'sun-moon', 'layout-dashboard', 'maximize-2',
   'pencil', 'panel-left', 'minimize-2', 'arrow-up-right', 'grip-vertical', 'command', 'send', 'palette', 'cpu', 'memory-stick', 'hard-drive', 'columns-2', 'rows-2', 'grid-2x2', 'bell',
-  'folder-plus', 'folder-closed', 'folder-output', 'folder-input', 'folder-search', 'corner-left-up', 'git-fork', 'house', 'list-tree', 'paperclip', 'lock', 'lock-open',
+  'folder-plus', 'folder-closed', 'folder-output', 'folder-input', 'folder-search', 'corner-left-up', 'git-fork', 'house', 'list-tree', 'paperclip', 'lock', 'lock-open', 'app-window',
 ];
 
 const root = join(import.meta.dirname, '..');

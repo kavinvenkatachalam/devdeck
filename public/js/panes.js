@@ -1,4 +1,4 @@
-// The Changes and Code lenses.
+// The Changes, Code and Preview lenses.
 import { html, useEffect, useState } from '/vendor/preact.js';
 import { JobView } from './env.js';
 import { ErrorBox, Icon, call, isDark, onThemeChange, plural, qs, store, toast } from './lib.js';
@@ -121,6 +121,36 @@ export function CodePane({ path, active }) {
       </div>
       ${err && html`<div style="margin-top:14px;text-align:left"><${ErrorBox} error=${err} /></div>`}
       ${jobId && html`<div style="margin-top:14px;text-align:left"><${JobView} jobId=${jobId} onDone=${() => { setJobId(null); load(); }} /></div>`}
+    </div></div>`;
+}
+
+// ---------- preview ----------
+
+// The worktree's running app, beside its terminal. It stays loaded while another lens shows (hidden), so the page
+// you were on survives a look at the terminal. ToolJet signs in here only with devdeck on localhost (index.html).
+export function PreviewPane({ ec, active }) {
+  const [n, setN] = useState(0); // bumped by ⟳: a fresh frame (the app's own page is another origin, out of reach)
+  const fe = ec.env?.services?.frontend;
+  const url = fe?.state === 'running' ? fe.url : '';
+  if (url) return html`
+    <div class="preview">
+      <div class="preview-bar">
+        <button class="icon-btn sm" title="Reload" onClick=${() => setN(n + 1)}><${Icon} name="rotate-cw" cls="sm" /></button>
+        <span class="mono ellipsis muted">${url.replace('http://', '')}</span>
+        ${location.hostname !== 'localhost' && html`<span class="small warn ellipsis">Update the devdeck app to sign in here</span>`}
+        <a class="icon-btn sm" href=${url} target="_blank" rel="noopener" title="Open in your browser"><${Icon} name="external-link" cls="sm" /></a>
+      </div>
+      <div class="code-frame"><iframe key=${n} src=${url} title="Preview" allow="clipboard-read; clipboard-write"></iframe></div>
+    </div>`;
+  if (!active) return null;
+  const { env, st, busy, act } = ec;
+  const starting = fe?.state === 'starting' || busy;
+  return html`
+    <div class="empty"><div class="empty-box">
+      <div class="empty-ic"><${Icon} name=${starting ? 'loader-circle' : 'app-window'} cls=${starting ? 'spin' : ''} /></div>
+      <h2>${starting ? 'Starting the app…' : 'See the app here'}</h2>
+      <p class="muted">${starting ? st?.sub || 'It shows here once the frontend answers.' : "Start this worktree's servers, and its app opens here, beside the terminal."}</p>
+      ${env && !starting && html`<button class="btn primary" onClick=${() => act('start')}><${Icon} name="play" />${env.ready ? 'Start servers' : 'Set up & start'}</button>`}
     </div></div>`;
 }
 

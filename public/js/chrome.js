@@ -26,7 +26,7 @@ export function TopBar({ onBack, crumbs, title, sub, lenses, cur, pick, changes,
   const [editingAt, setEditingAt] = useState(null);
   const last = crumbs.map((x) => !x.node).lastIndexOf(true);
   const chip = (c, i) => {
-    const cls = `crumb-chip ${i === last ? 'cur' : ''}`;
+    const cls = `crumb-chip ${i === last ? 'cur' : ''} ${c.cls || ''}`;
     const icon = c.icon && html`<${Icon} name=${c.icon} cls="xs" />`;
     const stop = () => { setEditingAt(null); c.onEditEnd?.(); };
     if (c.rename && (editingAt === i || c.editing)) {

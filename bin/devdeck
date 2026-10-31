@@ -25,6 +25,7 @@ suffix=; [ "$port" = 4317 ] || suffix="-$port"
 pidfile="$state/devdeck$suffix.pid"
 log="$state/devdeck$suffix.log"
 url="http://127.0.0.1:$port"
+page="http://localhost:$port" # the dashboard's address (see public/index.html)
 mkdir -p "$state"
 
 running() { [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; }
@@ -49,7 +50,7 @@ phone_url() {
 
 start() {
   if running && up; then
-    echo "devdeck is running: $url"
+    echo "devdeck is running: $page"
   else
     need_node
     if up; then echo "port $port is already in use by something else" >&2; exit 1; fi
@@ -62,7 +63,7 @@ start() {
     ' "$here/src/server.ts" "$log" "$pidfile"
     for _ in $(seq 1 50); do up && break; sleep 0.2; done
     if ! up; then echo "devdeck did not start; see $log" >&2; tail -20 "$log" >&2; exit 1; fi
-    echo "devdeck started: $url"
+    echo "devdeck started: $page"
   fi
   phone_url
 }
@@ -159,9 +160,9 @@ case "${1:-start}" in
   start) start ;;
   stop) stop ;;
   restart) stop; start ;;
-  status) if running && up; then echo "running: $url (pid $(cat "$pidfile"))"; phone_url; else echo "not running"; exit 1; fi ;;
+  status) if running && up; then echo "running: $page (pid $(cat "$pidfile"))"; phone_url; else echo "not running"; exit 1; fi ;;
   logs) exec tail -n 50 -f "$log" ;;
-  open) start >/dev/null; open "$url" ;;
+  open) start >/dev/null; open "$page" ;;
   run) need_node; exec "$node" --experimental-strip-types --no-warnings "$here/src/server.ts" ;;
   autostart) autostart "$2" ;;
   hooks) hooks ;;

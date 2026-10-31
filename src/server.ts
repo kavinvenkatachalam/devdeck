@@ -804,6 +804,6 @@ await scrubServerEnv();
 tailnetIdentity(); // ask now, so the phone isn't turned away while the first answer is pending
 startUpdateChecks();
 server.listen(PORT, HOST, () => {
-  console.log(`devdeck on http://${HOST}:${PORT}`);
+  console.log(`devdeck on http://${HOST === '127.0.0.1' ? 'localhost' : HOST}:${PORT}`);
   if (HOST === '127.0.0.1') console.log(`phone: tailscale serve --bg --https=8444 http://localhost:${PORT}`);
 });

@@ -225,8 +225,8 @@ export function EnvButtons({ co, ec, hide }) {
   const { st, anyUp, busy, act, env } = ec;
   return html`
     ${st?.cls && html`<span class=${`pill ${st.cls} hide-phone`}><span class=${`dot ${st.cls}`}></span>${st.label}</span>`}
-    ${!anyUp && html`<button class="btn sm hide-phone" disabled=${busy} onClick=${() => act('start')} title="Start the ToolJet servers"><${Icon} name="play" cls="sm" />${env.ready ? 'Start servers' : 'Set up & start'}</button>`}
-    ${anyUp && html`<button class="btn sm hide-phone" disabled=${busy} onClick=${() => act('stop')}><${Icon} name="square" cls="sm" />Stop</button>`}`;
+    ${!anyUp && html`<button class="btn sm hide-phone" disabled=${busy} onClick=${() => act('start')} title="Start the ToolJet servers"><${Icon} name="play" cls="sm" /><span class="btn-label">${env.ready ? 'Start servers' : 'Set up & start'}</span></button>`}
+    ${anyUp && html`<button class="btn sm hide-phone" disabled=${busy} onClick=${() => act('stop')} title="Stop the servers"><${Icon} name="square" cls="sm" /><span class="btn-label">Stop</span></button>`}`;
 }
 
 export async function removeWorktree(co, ec, discard) {

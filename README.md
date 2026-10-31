@@ -36,7 +36,7 @@ Your terminals keep running through updates and restarts. Settings live in `~/.c
 ```bash
 npm install
 ln -s "$PWD/bin/devdeck" ~/.local/bin/devdeck   # puts `devdeck` on your PATH
-devdeck                                         # http://127.0.0.1:4317
+devdeck                                         # http://localhost:4317
 npm run check && npm test                       # type-check and tests
 ```
 
