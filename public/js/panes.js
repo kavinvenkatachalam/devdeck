@@ -1,5 +1,6 @@
 // The Changes, Code and Preview lenses.
 import { html, useEffect, useState } from '/vendor/preact.js';
+import { lensKeysIn } from './chrome.js';
 import { JobView } from './env.js';
 import { ErrorBox, Icon, call, isDark, onThemeChange, plural, qs, store, toast } from './lib.js';
 
@@ -103,7 +104,7 @@ export function CodePane({ path, active }) {
   };
   // your editor's settings and extensions come along on their own (see codeserver.ts); full screen is in the ⋯ menu
   if (st?.running && !st.stale && !st.broken && active)
-    return html`<div class="code-frame"><iframe key=${path} src=${codeUrl(path)} title="Code" allow="clipboard-read; clipboard-write"></iframe></div>`;
+    return html`<div class="code-frame"><iframe key=${path} src=${codeUrl(path)} title="Code" allow="clipboard-read; clipboard-write" onLoad=${(e) => lensKeysIn(e.target)}></iframe></div>`;
   return html`
     <div class="empty"><div class="empty-box" style="max-width:380px">
       <div class="empty-ic"><${Icon} name="code-xml" /></div>

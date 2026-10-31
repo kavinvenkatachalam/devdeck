@@ -66,6 +66,12 @@ export async function scrubServerEnv() {
   }
 }
 
+// A tmux server started before tmux.conf passed links on (OSC 8) gets that too; viewers attaching from now on see them.
+export async function passLinks() {
+  const features = await tmux('show', '-s', 'terminal-features').catch(() => null);
+  if (features !== null && !features.includes('hyperlinks')) await tmux('set', '-as', 'terminal-features', ',xterm-256color:hyperlinks').catch(() => {});
+}
+
 const rows = (out: string) => out.split('\n').filter(Boolean).map((l) => l.split('\t'));
 
 export async function listSessions(): Promise<Session[]> {

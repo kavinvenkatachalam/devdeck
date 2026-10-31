@@ -1,6 +1,6 @@
 // The terminal (xterm over a WebSocket to tmux), the phone compose box, quick replies and the folder tabs above it.
 import { html, useEffect, useLayoutEffect, useRef, useState } from '/vendor/preact.js';
-import { ErrorBox, Icon, InlineEdit, ask, call, copy, isDark, onKeyboard, onThemeChange, phone, qs, store, toast, ui } from './lib.js';
+import { ErrorBox, Icon, InlineEdit, ask, call, copy, isDark, keyLabel, keyMods, onKeyboard, onThemeChange, phone, qs, store, toast, ui } from './lib.js';
 import { AGENT, confirmEnd, leadTab, renameSessionTo, sessionHere, tabDot } from './model.js';
 
 // ---------- terminal ----------
@@ -110,6 +110,13 @@ function Terminal({ session, tabIndex, sendRef, ctlRef, onGone, small, autofocus
       allowProposedApi: true, // unicode graphemes
       macOptionIsMeta: true, // ⌥ sends Meta to the CLI instead of composing characters
       macOptionClickForcesSelection: true, // ⌥-drag selects in the browser even while tmux has the mouse
+      // links whose text isn't the address (OSC 8: Claude's "⧉ Plan" for an artifact): a click opens them, a hover
+      // shows where they go
+      linkHandler: {
+        activate: (_e, uri) => window.open(uri, '_blank', 'noopener'),
+        hover: (_e, uri) => { if (el.current) el.current.title = uri; },
+        leave: () => { if (el.current) el.current.title = ''; },
+      },
     });
     const fit = new window.FitAddon.FitAddon();
     term.loadAddon(fit);
@@ -227,6 +234,7 @@ function Terminal({ session, tabIndex, sendRef, ctlRef, onGone, small, autofocus
     // search and split, from the frame's buttons and the panes' own (tmux does them: see the server)
     const pane = (what, id, force) => { send({ t: 'p', do: what, pane: id, force }); term.focus(); };
     paneRef.current = pane;
+    ui.focusTerm = () => term.focus(); // back to the Terminal lens from the keyboard (TopBar)
     const confirmClose = async ({ busy, pane: id }) => {
       if (await ask({ title: `Close this pane?`, body: `${busy} is running in it, and will be ended.`, ok: 'Close pane', danger: true })) pane('close', id, true);
     };
@@ -444,6 +452,7 @@ function Terminal({ session, tabIndex, sendRef, ctlRef, onGone, small, autofocus
     }
 
     return () => {
+      if (ui.focusTerm) ui.focusTerm = null;
       el.current?.removeEventListener('paste', onPaste, true);
       if (tapped) el.current?.removeEventListener('click', tapped);
       el.current?.removeEventListener('contextmenu', noMenu);
@@ -678,7 +687,7 @@ function FolderTabs({ s, siblings, refresh, openSession, onRenamed, ctlRef }) {
         const a = t?.agent && AGENT[t.agent];
         return html`
           <div class=${`ftab ${x.name === s.name ? 'sel' : ''}`} key=${x.name} onClick=${() => x.name !== s.name && openSession(x.name)}
-            title=${`${x.name}${a ? ` · ${t.program} ${a[1]}` : ''}${i < 9 ? ` (⌘${i + 1})` : ''} · double-click to rename`}
+            title=${`${x.name}${a ? ` · ${t.program} ${a[1]}` : ''}${i < 9 && keyMods().sessions !== 'off' ? ` (${keyLabel(keyMods().sessions, i + 1)})` : ''} · double-click to rename`}
             onDblClick=${(e) => { e.preventDefault(); setEditing(x.name); }}>
             ${i < 9 && html`<span class="ftab-k">${i + 1}</span>`}<span class=${`dot ${t ? tabDot(t) : 'off'}`}></span>
             ${editing === x.name

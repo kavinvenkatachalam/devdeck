@@ -21,7 +21,7 @@ import { expandHome, loadSettings, saveSettings } from './settings.ts';
 import { capture, CmdError, run, stripAnsi, tail } from './sh.ts';
 import { logFile, pastRuns, STATE_ROOT, updateState } from './state.ts';
 import { shareOnTailnet, tailscaleStatus } from './tailscale.ts';
-import { cleanEnv, createSession, killSession, listSessions, moveSession, paneProgram, oneTerminalEach, orderSessions, renameSession, reply, safeName, scrubServerEnv, setFolder, tmux, tmuxArgs, VIEWER_SEP, withAgents } from './tmux.ts';
+import { cleanEnv, createSession, killSession, listSessions, moveSession, paneProgram, oneTerminalEach, orderSessions, renameSession, passLinks, reply, safeName, scrubServerEnv, setFolder, tmux, tmuxArgs, VIEWER_SEP, withAgents } from './tmux.ts';
 import { tools } from './workspace.ts';
 
 const HOST = process.env.HOST || '127.0.0.1';
@@ -801,6 +801,7 @@ wss.on('connection', async (ws, url: URL) => {
 });
 
 await scrubServerEnv();
+await passLinks();
 tailnetIdentity(); // ask now, so the phone isn't turned away while the first answer is pending
 startUpdateChecks();
 server.listen(PORT, HOST, () => {

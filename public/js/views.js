@@ -69,7 +69,8 @@ export function SessionView({ s, co, siblings, refresh, onBack, openWorktree, op
   ].filter(Boolean);
 
   return html`
-    <div class="view">
+    <div class=${`view ${cur === 'preview' ? 'immersive' : ''}`}>
+      ${cur === 'preview' && html`<div class="top-reveal" aria-hidden="true"></div>`}
       <${TopBar} onBack=${onBack} crumbs=${crumbs} title=${s.name} lenses=${lenses} cur=${cur} pick=${pick} changes=${changes}
         sub=${co ? html`<button class="crumb" onClick=${() => openWorktree(co.path)}><${Icon} name="git-branch" cls="sm" />${coTitle(co)}<${Icon} name="chevron-right" cls="sm" /></button>${co.pr && html`<${PrBadge} pr=${co.pr} link />`}` : shortPath(s.path)}>
         ${co?.tooljet && ec.st && html`<button class=${`pill ${ec.st.cls} only-phone`} onClick=${() => pick('env')}><span class=${`dot ${ec.st.cls || 'off'}`}></span></button>`}
@@ -112,7 +113,8 @@ export function WorktreeView({ c, sessions, refresh, onBack, openSession, goHome
     !c.main && { icon: 'trash-2', label: 'Remove worktree', danger: true, run: async () => (await removeWorktree(c, ec, false)) && c.tooljet && pick('env') },
   ];
   return html`
-    <div class="view">
+    <div class=${`view ${cur === 'preview' ? 'immersive' : ''}`}>
+      ${cur === 'preview' && html`<div class="top-reveal" aria-hidden="true"></div>`}
       <${TopBar} onBack=${onBack} crumbs=${[{ label: c.project, icon: 'folder-git-2', go: goHome }, { label: coTitle(c), icon: 'git-branch' }]}
         title=${coTitle(c)} sub=${`${c.project} · ${shortPath(c.path)}`} lenses=${lenses} cur=${cur} pick=${pick} changes=${c.stats?.changes || 0}>
         ${c.tooljet && ec.st && html`<span class=${`pill ${ec.st.cls} only-phone`}><span class=${`dot ${ec.st.cls || 'off'}`}></span></span>`}

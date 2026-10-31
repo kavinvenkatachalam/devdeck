@@ -1,7 +1,7 @@
 // Tools and Settings screens.
 import { html, useEffect, useRef, useState } from '/vendor/preact.js';
 import { TERM_THEMES, setTermTheme } from './terminal.js';
-import { Copy, ErrorBox, Icon, ThemeSwitch, WORKING_STYLES, Working, ask, call, isIOS, plural, setWorking, shortPath, store, toast, useInstall, useWorking } from './lib.js';
+import { Copy, ErrorBox, Icon, KEY_MODS, ThemeSwitch, WORKING_STYLES, Working, ask, call, isIOS, keyMods, plural, setWorking, shortPath, store, toast, useInstall, useWorking } from './lib.js';
 
 // ---------- tools & settings ----------
 
@@ -74,6 +74,20 @@ function TermThemePick() {
     </div>`;
 }
 
+// The key held with 1–9 to pick a session tab or a view by its place (this browser's choice, like the theme).
+// A modifier the other one uses can't be picked.
+const KEY_ROWS = [['sessions', 'Session tabs', ['cmd-ctrl', 'cmd', 'ctrl', 'alt', 'off']], ['views', 'Views', ['alt', 'ctrl', 'cmd-alt', 'cmd', 'off']]];
+function KeysPick() {
+  const [k, setK] = useState(keyMods());
+  const pick = (row, id) => { const next = { ...k, [row]: id }; setK(next); store.set('keys', next); };
+  const taken = (row, id) => { const other = KEY_MODS[k[row === 'views' ? 'sessions' : 'views']].uses; return KEY_MODS[id].uses.some((u) => other.includes(u)); };
+  return html`<dl class="kv">${KEY_ROWS.map(([row, label, ids]) => html`
+    <dt>${label}</dt><dd><div class="seg key-seg" role="radiogroup" aria-label=${label}>${ids.map((id) => html`
+      <button class=${k[row] === id ? 'sel' : ''} role="radio" aria-checked=${k[row] === id} disabled=${taken(row, id)}
+        title=${taken(row, id) ? `Used for ${row === 'views' ? 'session tabs' : 'views'}` : ''} onClick=${() => pick(row, id)}>${KEY_MODS[id].label}${id !== 'off' && html`<span class="key-n">1–9</span>`}</button>`)}
+    </div></dd>`)}</dl>`;
+}
+
 export function SettingsView({ onSaved }) {
   const [s, setS] = useState(null);
   const [roots, setRoots] = useState([]);
@@ -117,6 +131,11 @@ export function SettingsView({ onSaved }) {
         <div class="card-h"><h3><${Icon} name="sun-moon" />Appearance</h3></div>
         <div class="card-b"><dl class="kv"><dt>Theme</dt><dd><${ThemeSwitch} labels /></dd><dt>Working</dt><dd class="working-dd"><${WorkingPick} /></dd><dt>Terminal</dt><dd><${TermThemePick} /></dd></dl>
           <div class="small muted" style="margin-top:10px">Claude Code picks its own colors: if its text looks off on a light terminal, run <span class="mono">/theme</span> in it and choose a light one.</div></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h3><${Icon} name="command" />Keyboard</h3></div>
+        <div class="card-b"><${KeysPick} />
+          <div class="small muted" style="margin-top:10px">Hold the key and press a number: the session tab, or the view (Terminal, Changes, Code…), at that place. They work while you type in the terminal, which then doesn't get them. In Chrome, ⌘ with a number switches Chrome's own tabs, so ⌘ alone works only in the devdeck app.</div></div>
       </div>
       <div class="card">
         <div class="card-h"><h3><${Icon} name="folder-git-2" />Projects</h3></div>
