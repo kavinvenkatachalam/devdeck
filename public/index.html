@@ -9,6 +9,20 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="devdeck">
   <title>devdeck</title>
+  <!-- devdeck lives on localhost, the site ToolJet's dev servers are on, so a ToolJet sign-in works inside Preview
+       (127.0.0.1 is another site to the browser, which then drops ToolJet's strict login cookie in a frame).
+       127.0.0.1 hands its saved settings over once, then forwards. The old desktop app only allows 127.0.0.1: stay. -->
+  <script>
+    if (location.hostname === '127.0.0.1' && (!window.devdeckApp || window.devdeckApp.localhost)) {
+      const carry = {};
+      try { for (const k of Object.keys(localStorage)) if (k.startsWith('devdeck.')) { carry[k] = localStorage.getItem(k); localStorage.removeItem(k); } } catch {}
+      const hash = Object.keys(carry).length ? `#carry=${encodeURIComponent(JSON.stringify(carry))}` : location.hash;
+      location.replace(`${location.protocol}//localhost:${location.port}${location.pathname}${location.search}${hash}`);
+    } else if (location.hash.startsWith('#carry=')) {
+      try { for (const [k, v] of Object.entries(JSON.parse(decodeURIComponent(location.hash.slice(7))))) if (localStorage.getItem(k) === null) localStorage.setItem(k, v); } catch {}
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+  </script>
   <script>try { const t = JSON.parse(localStorage.getItem('devdeck.theme')); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}</script>
   <!-- Chrome can say "installable" before the app's modules load: keep the event for them (lib.js useInstall) -->
   <script>addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); window.ddInstall = e; dispatchEvent(new Event('dd-installable')); });</script>

@@ -4,7 +4,7 @@ import { TopBar, useLens } from './chrome.js';
 import { EnvButtons, EnvPane, removeWorktree, useEnvControls } from './env.js';
 import { Copy, Icon, MenuButton, Section, ago, call, copy, isHome, phone, plural, reloadAll, shortPath, store, toast, ui } from './lib.js';
 import { AGENT, AgentLabel, PrBadge, PrCard, checkoutsOf, coTitle, confirmEnd, leadTab, prBlock, prLook, prStatus, renameFolderTo, renameSessionTo, serverState, sessionHere, tabDot, whereOf } from './model.js';
-import { ChangesPane, CodePane, codeUrl, vscode } from './panes.js';
+import { ChangesPane, CodePane, PreviewPane, codeUrl, vscode } from './panes.js';
 import { ProjectsSheet } from './sheets.js';
 import { Replies, TerminalPane } from './terminal.js';
 
@@ -22,9 +22,9 @@ const phoneDetails = ({ co, ec, pick, openWorktree }) => phone() ? [
 export function SessionView({ s, co, siblings, refresh, onBack, openWorktree, openSession, onRenamed, goHome }) {
   // Changes needs git; Code opens any folder (except your whole home folder)
   // (no Code on the phone: VS Code is a heavy first load over a slow link, and hard to use on a phone keyboard)
-  const lenses = [['terminal', 'Terminal', 'terminal'], s.git && ['changes', 'Changes', 'file-diff'], !isHome(s.path) && !phone() && ['code', 'Code', 'code-xml'], co?.tooljet && ['env', 'Env', 'server']].filter(Boolean);
+  const lenses = [['terminal', 'Terminal', 'terminal'], s.git && ['changes', 'Changes', 'file-diff'], !isHome(s.path) && !phone() && ['code', 'Code', 'code-xml'], co?.tooljet && !phone() && ['preview', 'Preview', 'app-window'], co?.tooljet && ['env', 'Env', 'server']].filter(Boolean);
   const [cur, pick, visited] = useLens(`lens.s.${s.name}`, lenses.map(([id]) => id), 'terminal');
-  const ec = useEnvControls(co, cur === 'env');
+  const ec = useEnvControls(co, cur === 'env' || cur === 'preview');
   const [renaming, setRenaming] = useState(false);
   // select the new name before the list refreshes, or the old one looks like it vanished
   const renameTo = (to) => renameSessionTo(s, to, refresh, (_, name) => onRenamed(name));
@@ -61,7 +61,7 @@ export function SessionView({ s, co, siblings, refresh, onBack, openWorktree, op
   // folder › session, then where it runs (the worktree opens its env, changes and code)
   const where = whereOf(s, co);
   const crumbs = [
-    s.folder && { label: s.folder, icon: 'folder-closed', rename: (to) => renameFolderTo(s.folder, to, refresh) },
+    s.folder && { label: s.folder, icon: 'folder-closed', cls: 'crumb-folder', rename: (to) => renameFolderTo(s.folder, to, refresh) },
     { label: s.name, icon: 'terminal', rename: renameTo, editing: renaming, onEditEnd: () => setRenaming(false) },
     { node: co
       ? html`<button class="where-chip" title="Open this worktree" onClick=${() => openWorktree(co.path)}><${Icon} name=${where.icon} cls="xs" /><span class="ellipsis">${where.text}</span></button>`
@@ -74,21 +74,22 @@ export function SessionView({ s, co, siblings, refresh, onBack, openWorktree, op
         sub=${co ? html`<button class="crumb" onClick=${() => openWorktree(co.path)}><${Icon} name="git-branch" cls="sm" />${coTitle(co)}<${Icon} name="chevron-right" cls="sm" /></button>${co.pr && html`<${PrBadge} pr=${co.pr} link />`}` : shortPath(s.path)}>
         ${co?.tooljet && ec.st && html`<button class=${`pill ${ec.st.cls} only-phone`} onClick=${() => pick('env')}><span class=${`dot ${ec.st.cls || 'off'}`}></span></button>`}
         <${EnvButtons} co=${co} ec=${ec} hide=${envActive} />
-        ${co?.pr && html`<span class="hide-phone"><${PrBadge} pr=${co.pr} link /></span>`}
+        ${co?.pr && html`<span class="hide-phone top-pr"><${PrBadge} pr=${co.pr} link /></span>`}
         <${MenuButton} items=${items} />
       </${TopBar}>
       <div class="pane" hidden=${cur !== 'terminal'}>${(visited.terminal || cur === 'terminal') && html`<${TerminalPane} key=${s.name} s=${s} siblings=${siblings} refresh=${refresh} openSession=${openSession} onRenamed=${onRenamed} />`}</div>
       ${cur === 'changes' && html`<div class="pane"><${ChangesPane} path=${s.path} /></div>`}
       <div class="pane" hidden=${cur !== 'code'}>${visited.code && html`<${CodePane} path=${s.path} active=${cur === 'code'} />`}</div>
+      <div class="pane" hidden=${cur !== 'preview'}>${visited.preview && co?.tooljet && html`<${PreviewPane} key=${co.path} ec=${ec} active=${cur === 'preview'} />`}</div>
       ${envActive && html`<div class="pane"><${EnvPane} c=${co} env=${ec.env} reload=${ec.reload} jobId=${ec.jobId} setJobId=${ec.setJobId} onRemoved=${() => toast('Worktree removed')} removeDiscard=${() => removeWorktree(co, ec, true)} /></div>`}
     </div>`;
 }
 
 // A worktree: its dev environment, changes and code, and the sessions open in it.
 export function WorktreeView({ c, sessions, refresh, onBack, openSession, goHome }) {
-  const lenses = [c.tooljet && ['env', 'Env', 'server'], ['changes', 'Changes', 'file-diff'], !phone() && ['code', 'Code', 'code-xml']].filter(Boolean);
+  const lenses = [c.tooljet && ['env', 'Env', 'server'], ['changes', 'Changes', 'file-diff'], !phone() && ['code', 'Code', 'code-xml'], c.tooljet && !phone() && ['preview', 'Preview', 'app-window']].filter(Boolean);
   const [cur, pick, visited] = useLens(`lens.w.${c.path}`, lenses.map(([id]) => id), lenses[0][0]);
-  const ec = useEnvControls(c, cur === 'env');
+  const ec = useEnvControls(c, cur === 'env' || cur === 'preview');
   const [busy, setBusy] = useState(false);
   const here = sessions.filter((s) => s.checkout === c.path);
   const newSession = async () => {
@@ -116,10 +117,10 @@ export function WorktreeView({ c, sessions, refresh, onBack, openSession, goHome
         title=${coTitle(c)} sub=${`${c.project} · ${shortPath(c.path)}`} lenses=${lenses} cur=${cur} pick=${pick} changes=${c.stats?.changes || 0}>
         ${c.tooljet && ec.st && html`<span class=${`pill ${ec.st.cls} only-phone`}><span class=${`dot ${ec.st.cls || 'off'}`}></span></span>`}
         <${EnvButtons} co=${c} ec=${ec} hide=${cur === 'env'} />
-        ${c.pr && html`<span class="hide-phone"><${PrBadge} pr=${c.pr} link /></span>`}
+        ${c.pr && html`<span class="hide-phone top-pr"><${PrBadge} pr=${c.pr} link /></span>`}
         <${MenuButton} items=${items} />
       </${TopBar}>
-      ${cur !== 'code' && html`<div class="here">
+      ${cur !== 'code' && cur !== 'preview' && html`<div class="here">
         <span class="here-l">${here.length ? 'Sessions' : 'No session here yet'}</span>
         ${here.map((s) => { const t = leadTab(s); return html`<button class="chip-btn" onClick=${() => openSession(s.name)}><span class=${`dot ${t ? tabDot(t) : 'off'}`}></span>${s.name}</button>`; })}
         <button class="chip-btn add" disabled=${busy} onClick=${newSession}><${Icon} name="plus" cls="sm" />New session here</button>
@@ -128,6 +129,7 @@ export function WorktreeView({ c, sessions, refresh, onBack, openSession, goHome
       ${cur === 'env' && html`<div class="pane"><${EnvPane} c=${c} env=${ec.env} reload=${ec.reload} jobId=${ec.jobId} setJobId=${ec.setJobId} onRemoved=${() => toast('Worktree removed')} removeDiscard=${() => removeWorktree(c, ec, true)} /></div>`}
       ${cur === 'changes' && html`<div class="pane"><${ChangesPane} path=${c.path} /></div>`}
       <div class="pane" hidden=${cur !== 'code'}>${visited.code && html`<${CodePane} path=${c.path} active=${cur === 'code'} />`}</div>
+      <div class="pane" hidden=${cur !== 'preview'}>${visited.preview && html`<${PreviewPane} ec=${ec} active=${cur === 'preview'} />`}</div>
     </div>`;
 }
 

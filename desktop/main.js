@@ -8,6 +8,9 @@ const path = require('node:path');
 
 const PORT = process.env.DEVDECK_PORT || '4317';
 const BASE = `http://127.0.0.1:${PORT}`;
+// the dashboard moves itself to localhost (see public/index.html): both are devdeck's own pages
+const ORIGINS = [BASE, `http://localhost:${PORT}`];
+const own = (url) => { try { return ORIGINS.includes(new URL(url).origin); } catch { return false; } };
 const REPO = 'kavinvenkatachalam/devdeck';
 const HOUR = 60 * 60 * 1000;
 
@@ -66,12 +69,12 @@ async function open() {
   win.on('closed', () => (win = null));
   // devdeck's own pages (Code in its own tab, say) open as app windows; any other site in your browser
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith(BASE)) return { action: 'allow' };
+    if (own(url)) return { action: 'allow' };
     shell.openExternal(url);
     return { action: 'deny' };
   });
   win.webContents.on('will-navigate', (e, url) => {
-    if (url.startsWith(BASE) || url.startsWith('file:')) return;
+    if (own(url) || url.startsWith('file:')) return;
     e.preventDefault();
     shell.openExternal(url);
   });

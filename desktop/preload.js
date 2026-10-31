@@ -4,4 +4,5 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('devdeckApp', {
   start: () => ipcRenderer.invoke('start'),
   retry: () => ipcRenderer.invoke('retry'),
+  localhost: true, // this app lets the dashboard move to localhost
 });
