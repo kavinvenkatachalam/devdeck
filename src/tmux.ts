@@ -6,8 +6,9 @@ import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
 
-// devdeck owns its own tmux server, so it never touches HexoKit's or the user's sessions.
-export const SOCKET = 'devdeck';
+// devdeck owns its own tmux server, so it never touches the user's other sessions. DEVDECK_SOCKET names another one: a
+// devdeck with its own sessions (a fresh copy to try things in).
+export const SOCKET = process.env.DEVDECK_SOCKET || 'devdeck';
 export const CONF = join(import.meta.dirname, '..', 'tmux.conf');
 
 // Viewer sessions are grouped copies (one per browser tab) so each client can show its own window.
