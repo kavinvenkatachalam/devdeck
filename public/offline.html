@@ -9,7 +9,7 @@
     @media (prefers-color-scheme: dark) { :root { --bg: #111318; --panel: #181a20; --text: #e6e6ea; --muted: #9ca3af; --accent: #818cf8; --border: #2a2d36; } }
     body { margin: 0; min-height: 100dvh; display: grid; place-items: center; background: var(--bg); color: var(--text); font: 15px/1.5 ui-sans-serif, system-ui, sans-serif; padding: 24px; box-sizing: border-box; }
     main { max-width: 340px; text-align: center; }
-    img { width: 72px; height: 72px; border-radius: 18px; }
+    .mark { display: block; width: 72px; height: 72px; margin: 0 auto; }
     h1 { font-size: 19px; margin: 16px 0 6px; }
     p { color: var(--muted); margin: 0 0 18px; }
     ul { text-align: left; color: var(--muted); padding-left: 20px; margin: 0 0 22px; }
@@ -18,7 +18,8 @@
 </head>
 <body>
   <main>
-    <img src="/icons/icon-192.png" alt="">
+    <!-- drawn here, not loaded: with the Mac out of reach there's nothing to load it from -->
+    <svg class="mark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" aria-hidden="true"><rect width="512" height="512" rx="112" fill="#18181b"/><g transform="translate(48 48) scale(17.33)"><rect x="8" y="2.5" width="13" height="9" rx="2.4" fill="none" stroke="#ececef" stroke-width="1.5" opacity=".3"/><rect x="5.5" y="6" width="13" height="9" rx="2.4" fill="none" stroke="#ececef" stroke-width="1.5" opacity=".55"/><rect x="3" y="9.5" width="13.5" height="11" rx="2.4" fill="#818cf8"/><path d="M6.6 13.4l2.3 1.8-2.3 1.8M10.6 17.2h2.6" fill="none" stroke="#0c0c10" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></g></svg>
     <h1>Can't reach your Mac</h1>
     <p>devdeck runs on your Mac; this phone couldn't get to it.</p>
     <ul>

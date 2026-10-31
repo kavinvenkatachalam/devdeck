@@ -1,9 +1,10 @@
 // devdeck as an installed app. It's live-only: every request goes to the Mac, nothing is served from a cache, except
 // one page: opening the app while the Mac can't be reached (asleep, devdeck stopped, Tailscale off) shows offline.html
-// instead of the browser's error. Bump the cache name when offline.html or its icon change.
-const CACHE = 'devdeck-offline-1';
+// instead of the browser's error. It's self-contained (its icon is drawn in it), so it needs nothing else from the Mac.
+// Bump the cache name when offline.html changes.
+const CACHE = 'devdeck-offline-2';
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['/offline.html', '/icons/icon-192.png'])));
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['/offline.html'])));
   self.skipWaiting();
 });
 self.addEventListener('activate', (e) => {
