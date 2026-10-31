@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { accessSync, appendFileSync, closeSync, constants, mkdirSync, openSync, readFileSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { STATE_ROOT } from './state.ts';
 import { promisify } from 'node:util';
@@ -47,8 +47,28 @@ export function cleanEnv(): NodeJS.ProcessEnv {
 
 export const tmuxArgs = (...args: string[]) => ['-L', SOCKET, '-f', CONF, ...args];
 
+// The tmux binary itself. A tmux earlier on PATH can be a wrapper script (HexoKit's rk puts a guard there that costs
+// ~14 ms and two more processes a call); devdeck calls tmux several times a refresh and always names its own server
+// (-L), so it goes straight to the first real binary on PATH.
+export const TMUX = (() => {
+  for (const dir of (process.env.PATH || '').split(':')) {
+    const p = join(dir, 'tmux');
+    try {
+      const fd = openSync(p, 'r');
+      const head = Buffer.alloc(2);
+      readSync(fd, head, 0, 2, 0);
+      closeSync(fd);
+      accessSync(p, constants.X_OK);
+      if (head.toString() !== '#!') return p;
+    } catch {
+      /* not here */
+    }
+  }
+  return 'tmux';
+})();
+
 export async function tmux(...args: string[]) {
-  const { stdout } = await exec('tmux', tmuxArgs(...args), { env: cleanEnv() });
+  const { stdout } = await exec(TMUX, tmuxArgs(...args), { env: cleanEnv() });
   return stdout;
 }
 
@@ -225,6 +245,19 @@ export function readAgent(screen: string): { agent: Agent; choices?: string[] } 
     else if (m && m[1] === '1') choices.splice(0, choices.length, m[2].slice(0, 60));
   }
   return { agent: 'waiting', choices: choices.slice(0, 6) };
+}
+
+// Sessions whose Claude (or Codex) finished a turn (working → idle or waiting) since the last look. That's when files,
+// commits and artifacts change, so they're looked at again then instead of on a timer.
+const lastAgent = new Map<string, Agent | undefined>();
+export function turnsEnded(sessions: Session[]) {
+  const ended = new Set<string>();
+  for (const s of sessions) {
+    const a = s.tabs[0]?.agent;
+    if (lastAgent.get(s.name) === 'working' && a && a !== 'working') ended.add(s.name);
+    lastAgent.set(s.name, a);
+  }
+  return ended;
 }
 
 export async function withAgents(sessions: Session[]) {

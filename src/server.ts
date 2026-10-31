@@ -12,7 +12,7 @@ import { sessionArtifacts, withArtifacts } from './artifacts.ts';
 import { branchBase, diff } from './diff.ts';
 import { getJob, startJob } from './jobs.ts';
 import { listening } from './net.ts';
-import { discover, forgetStats, openable, projects, real, refreshAllStats, refreshStats } from './projects.ts';
+import { discover, forgetStats, openable, projects, real, refreshAllStats, refreshStats, refreshStatsUnder } from './projects.ts';
 import { addFolder, cleanFolder, folders, isLocked, lockedFolders, lockFolder, orderFolders, removeFolder, renameFolder } from './folders.ts';
 import { refreshPr, refreshPrs } from './prs.ts';
 import { hostStats } from './host.ts';
@@ -22,7 +22,7 @@ import { expandHome, loadSettings, saveSettings } from './settings.ts';
 import { capture, CmdError, run, stripAnsi, tail } from './sh.ts';
 import { logFile, pastRuns, STATE_ROOT, updateState } from './state.ts';
 import { shareOnTailnet, tailscaleStatus } from './tailscale.ts';
-import { cleanEnv, createSession, killSession, listSessions, moveSession, paneProgram, oneTerminalEach, orderSessions, renameSession, passLinks, reply, safeName, scrubServerEnv, setFolder, tmux, tmuxArgs, VIEWER_SEP, withAgents } from './tmux.ts';
+import { cleanEnv, createSession, killSession, listSessions, moveSession, paneProgram, oneTerminalEach, orderSessions, renameSession, passLinks, reply, safeName, scrubServerEnv, setFolder, tmux, TMUX, tmuxArgs, turnsEnded, VIEWER_SEP, withAgents } from './tmux.ts';
 import { tools } from './workspace.ts';
 
 const HOST = process.env.HOST || '127.0.0.1';
@@ -166,6 +166,15 @@ async function sessionList() {
   return listSessions();
 }
 
+// The sessions with their agents' states and artifact counts. A turn that just ended marks its checkout's change
+// counts for a recount and has Artifacts look for a new conversation.
+async function look() {
+  const sessions = await withAgents(await sessionList());
+  const ended = turnsEnded(sessions);
+  for (const s of sessions) if (ended.has(s.name)) refreshStatsUnder(s.path);
+  return withArtifacts(sessions, ended);
+}
+
 // Every open page asks for this every 5 s (the Mac and the phone: twice). One answer serves them all for 2 s, and
 // one that's being worked out is waited on rather than started again. Any change made through devdeck drops it.
 let shared: { roots: string; done: number; value: Promise<unknown> } | undefined;
@@ -176,7 +185,7 @@ function projectsShared(roots: string[]) {
     roots: key,
     done: 0,
     value: (async () => {
-      const sessions = await withAgents(await withArtifacts(await sessionList()));
+      const sessions = await look();
       return { ...(await projects(roots, sessions)), folders: folders(sessions), locked: lockedFolders() };
     })(),
   };
@@ -195,7 +204,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
   switch (route) {
     // ----- sessions & tabs -----
     case 'GET /sessions':
-      return send(res, 200, await withAgents(await withArtifacts(await sessionList())));
+      return send(res, 200, await look());
 
     case 'GET /projects':
       return send(res, 200, await projectsShared(settings.roots));
@@ -637,7 +646,7 @@ wss.on('connection', async (ws, url: URL) => {
   const viewer = `${session}${VIEWER_SEP}${Math.random().toString(36).slice(2, 8)}`;
   const args = ['new-session', '-t', session, '-s', viewer, ';', 'set-option', 'destroy-unattached', 'on'];
   if (/^\d+$/.test(index)) args.push(';', 'select-window', '-t', `${viewer}:${index}`);
-  const term = pty.spawn('tmux', tmuxArgs(...args), { name: 'xterm-256color', cols, rows, cwd: homedir(), env: cleanEnv() });
+  const term = pty.spawn(TMUX, tmuxArgs(...args), { name: 'xterm-256color', cols, rows, cwd: homedir(), env: cleanEnv() });
 
   // A slow link (a phone on mobile data) can't take output as fast as a program makes it: past 1 MB waiting to go out,
   // the terminal is paused (the program then waits, as it would on a slow ssh) until the backlog is down to 256 KB.
