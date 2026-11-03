@@ -6,11 +6,12 @@ export type Settings = {
   roots: string[]; // folders offered in the New session picker
   license: string; // ToolJet license key; empty = skip
   login: { email: string; password: string }; // dev admin created on first start
+  keepRuns: number; // days a schedule's run logs are kept
 };
 
 export const FILE = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'devdeck', 'settings.json');
 
-const DEFAULTS: Settings = { roots: ['~/Work'], license: '', login: { email: 'dev@tooljet.io', password: 'password' } };
+const DEFAULTS: Settings = { roots: ['~/Work'], license: '', login: { email: 'dev@tooljet.io', password: 'password' }, keepRuns: 7 };
 
 export const expandHome = (p: string) => (p === '~' || p.startsWith('~/') ? join(homedir(), p.slice(1)) : p);
 

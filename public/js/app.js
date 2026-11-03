@@ -3,6 +3,7 @@ import { html, render, useEffect, useRef, useState } from '/vendor/preact.js';
 import { Palette, StatusBar, TopBar } from './chrome.js';
 import { Ask, DeckMark, Icon, MenuItems, Popover, THEMES, ThemeSwitch, applyTheme, ask, call, isIOS, keyMods, phone, placeKey, reloadAll, shortPath, store, toast, ui, useInstall, usePoll } from './lib.js';
 import { AGENT, checkoutIndex, checkoutsOf, coTitle, leadTab, serverState, sessKey } from './model.js';
+import { SchedulesView } from './schedules.js';
 import { SettingsView, ToolsView } from './settings.js';
 import { MoveSheet, NewSheet } from './sheets.js';
 import { Panel, SessionTree } from './sidebar.js';
@@ -14,7 +15,7 @@ import { ClaudeUsage, Overview, SessionView, SetupCard, WorktreeView, WorktreesV
 function App() {
   const [data, setData] = useState(null);
   const [sel, setSel] = useState(store.get('sel', null)); // { kind: 'session', name } | { kind: 'worktree', path }
-  const [view, setView] = useState(store.get('view', 'main') === 'board' ? 'main' : store.get('view', 'main')); // main | worktrees | tools | settings
+  const [view, setView] = useState(store.get('view', 'main') === 'board' ? 'main' : store.get('view', 'main')); // main | worktrees | schedules | tools | settings
   const [adding, setAdding] = useState(null); // place being given a new session
   const [home, setHome] = useState(true); // phone: list screen
   const [filter, setFilter] = useState('');
@@ -150,6 +151,7 @@ function App() {
       { group: 'Actions', icon: 'layout-grid', label: 'Overview', run: goHome },
       { group: 'Actions', icon: 'rotate-cw', label: 'Reload pull requests and changes', run: reloadAll },
       { group: 'Actions', icon: 'panel-left', label: sideHidden ? 'Show sidebar' : 'Hide sidebar', run: () => ui.toggleSide() },
+      { group: 'Actions', icon: 'calendar-clock', label: 'Schedules', run: () => show('schedules') },
       { group: 'Actions', icon: 'wrench', label: 'Tools', run: () => show('tools') },
       { group: 'Actions', icon: 'settings', label: 'Settings', run: () => show('settings') },
       ...THEMES.map(([id, icon, label]) => ({ group: 'Theme', icon, label: `Theme: ${label}`, run: () => { store.set('theme', id); applyTheme(id); } })),
@@ -162,6 +164,7 @@ function App() {
   let main;
   if (view === 'worktrees') main = html`<div class="view">${pageHead('Worktrees')}<div class="pane"><${WorktreesView} data=${data} idx=${idx} openWorktree=${openWorktree} openSession=${openSession}
       addHere=${addHere} adding=${adding} onNewWorktree=${() => setSheet({ mode: 'worktree', folder: '' })} /></div></div>`;
+  else if (view === 'schedules') main = html`<div class="view">${pageHead('Schedules')}<div class="pane"><${SchedulesView} /></div></div>`;
   else if (view === 'tools') main = html`<div class="view">${pageHead('Tools')}<div class="pane"><${ToolsView} /></div></div>`;
   else if (view === 'settings') main = html`<div class="view">${pageHead('Settings')}<div class="pane"><${SettingsView} onSaved=${refresh} /></div></div>`;
   else if (s) main = html`<${SessionView} key=${s.name} s=${s} co=${s.checkout && idx.get(s.checkout)} siblings=${siblings} refresh=${refresh} onBack=${back} openWorktree=${openWorktree} openSession=${openSession} goHome=${goHome}
@@ -190,6 +193,7 @@ function App() {
           <button class="logo" title="Overview" onClick=${goHome}><${DeckMark} /></button>
           <button class="brand" title="Overview" onClick=${goHome}>devdeck</button>
           <button class="icon-btn only-phone" title="Worktrees" onClick=${() => show('worktrees')}><${Icon} name="git-fork" /></button>
+          <button class="icon-btn only-phone" title="Schedules" onClick=${() => show('schedules')}><${Icon} name="calendar-clock" /></button>
           <button class="icon-btn only-phone" title="Tools" onClick=${() => show('tools')}><${Icon} name="wrench" /></button>
           <button class="icon-btn only-phone" title="Settings" onClick=${() => show('settings')}><${Icon} name="settings" /></button>
           <button class="btn primary sm" onClick=${() => newSession()}><${Icon} name="plus" cls="sm" />New</button>
@@ -217,6 +221,7 @@ function App() {
         <div class="side-foot">
           <button class=${`nav-row ${view === 'worktrees' ? 'sel' : ''}`} onClick=${() => show('worktrees')}><${Icon} name="git-fork" />Worktrees
             ${data && html`<span class="nav-n">${checkoutsOf(data, idx).length || ''}</span>`}</button>
+          <button class=${`nav-row ${view === 'schedules' ? 'sel' : ''}`} onClick=${() => show('schedules')}><${Icon} name="calendar-clock" />Schedules</button>
           <button class=${`nav-row ${view === 'tools' ? 'sel' : ''}`} onClick=${() => show('tools')}><${Icon} name="wrench" />Tools</button>
           <button class=${`nav-row ${view === 'settings' ? 'sel' : ''}`} onClick=${() => show('settings')}><${Icon} name="settings" />Settings</button>
           ${host?.update?.available && html`
