@@ -10,6 +10,7 @@ A dev cockpit for Claude Code, Codex and git worktrees, on your Mac and your pho
 - **Changes and Code** — the diff and an editor (code-server) for each session's folder
 - **Pull requests** — status, checks and conflicts on each worktree, from your `gh` login
 - **Claude usage** — your 5-hour and weekly limits, live
+- **Schedules** — run a command at a time, on a cron expression, or when a Claude limit resets, with a log of each run
 - **Phone** — a full terminal with a compose box, over Tailscale
 - **Mac app** — a window onto devdeck, with updates in its menu
 

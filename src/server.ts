@@ -17,6 +17,7 @@ import { addFolder, cleanFolder, folders, isLocked, lockedFolders, lockFolder, o
 import { refreshPr, refreshPrs } from './prs.ts';
 import { hostStats } from './host.ts';
 import { checkNow, runUpdate, startUpdateChecks, updateInfo } from './update.ts';
+import { KEEP_DAYS, addSchedule, preview, pruneRuns, removeSchedule, runHistory, runLog, runNow, runsOf, scheduleList, startSchedules, updateSchedule } from './schedules.ts';
 import { addWorktree, recentBranches, repoAt, worktrees } from './repo.ts';
 import { expandHome, loadSettings, saveSettings } from './settings.ts';
 import { capture, CmdError, run, stripAnsi, tail } from './sh.ts';
@@ -196,8 +197,8 @@ function projectsShared(roots: string[]) {
 
 async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
   const parts = url.pathname.split('/').slice(2).map(decodeURIComponent); // after /api/
-  // ids only follow these collection names: /sessions/<name>/tabs, /tabs/<id>, /jobs/<id>
-  const route = `${req.method} /${parts.map((p, i) => (i % 2 && ['sessions', 'tabs', 'jobs', 'groups'].includes(parts[i - 1]) ? ':' : p)).join('/')}`;
+  // ids only follow these collection names: /sessions/<name>/tabs, /tabs/<id>, /jobs/<id>, /schedules/<id>/runs/<at>
+  const route = `${req.method} /${parts.map((p, i) => (i % 2 && ['sessions', 'tabs', 'jobs', 'groups', 'schedules', 'runs'].includes(parts[i - 1]) ? ':' : p)).join('/')}`;
   const q = (k: string) => url.searchParams.get(k) || '';
   const settings = loadSettings();
 
@@ -378,6 +379,38 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
         throw new HttpError(400, (e as Error).message);
       }
       return send(res, 202, { ok: true });
+
+    // ----- schedules (see schedules.ts) -----
+    case 'GET /schedules':
+      return send(res, 200, scheduleList());
+
+    case 'POST /schedules':
+    case 'POST /schedule-check':
+    case 'PUT /schedules/:':
+    case 'DELETE /schedules/:':
+    case 'POST /schedules/:/run':
+      try {
+        if (route === 'POST /schedules') return send(res, 200, addSchedule(await body(req)));
+        if (route === 'POST /schedule-check') return send(res, 200, { next: preview((await body(req)).when) });
+        if (route === 'PUT /schedules/:') return send(res, 200, updateSchedule(parts[1], await body(req)));
+        if (route === 'DELETE /schedules/:') return send(res, 200, (removeSchedule(parts[1]), { ok: true }));
+        runNow(parts[1]);
+        return send(res, 200, { ok: true });
+      } catch (e) {
+        throw new HttpError(400, (e as Error).message);
+      }
+
+    case 'GET /schedule-runs':
+      return send(res, 200, { runs: runHistory(), keepRuns: settings.keepRuns });
+
+    case 'GET /schedules/:/runs':
+      return send(res, 200, runsOf(parts[1].replace(/[^\w-]/g, '')));
+
+    case 'GET /schedules/:/runs/:': {
+      const text = runLog(parts[1].replace(/[^\w-]/g, ''), Number(parts[3]) || 0);
+      if (text === null) throw new HttpError(404, 'no such run');
+      return send(res, 200, { text });
+    }
 
     case 'GET /folders':
       return send(res, 200, await openable(settings.roots));
@@ -581,7 +614,9 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
         // the masked value comes back unchanged when the user didn't touch the field
         license: typeof next.license === 'string' && !next.license.startsWith('••••') ? next.license.trim() : settings.license,
         login: { ...settings.login, ...(next.login ?? {}) },
+        keepRuns: KEEP_DAYS.includes(next.keepRuns) ? next.keepRuns : settings.keepRuns,
       });
+      if (next.keepRuns !== undefined) pruneRuns();
       return send(res, 200, { ok: true });
     }
   }
@@ -820,6 +855,7 @@ await scrubServerEnv();
 await passLinks();
 tailnetIdentity(); // ask now, so the phone isn't turned away while the first answer is pending
 startUpdateChecks();
+startSchedules();
 server.listen(PORT, HOST, () => {
   console.log(`devdeck on http://${HOST === '127.0.0.1' ? 'localhost' : HOST}:${PORT}`);
   if (HOST === '127.0.0.1') console.log(`phone: tailscale serve --bg --https=8444 http://localhost:${PORT}`);

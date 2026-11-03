@@ -105,6 +105,8 @@ function subscribed() {
     const limits = saved?.value?.rate_limits;
     return [{
       key: c.key,
+      dir: c.dir,
+      state: c.state,
       account: (a.emailAddress || a.displayName || basename(c.dir)) as string,
       plan: PLANS[a.organizationType] || 'Subscription',
       connected,
@@ -131,6 +133,34 @@ export function claudeAccounts() {
     fiveHour: freshest(cs.map((c) => c.fiveHour)),
     week: freshest(cs.map((c) => c.week)),
   }));
+}
+
+// The config folder an account is used from, for CLAUDE_CONFIG_DIR: of several signed in to it, the one Claude last
+// ran in (an old one's sign-in may have expired). None for ~/.claude: Claude's default, which keeps its state outside
+// the folder, so naming it would look signed out.
+function usedConfig(account: string) {
+  const used = (c: { at: number; state: string }) => Math.max(c.at, statSync(c.state, { throwIfNoEntry: false })?.mtimeMs ?? 0);
+  return subscribed().filter((c) => c.account === account).sort((a, b) => used(b) - used(a))[0];
+}
+export function configDirOf(account: string) {
+  const dir = usedConfig(account)?.dir;
+  return dir && dir !== join(homedir(), '.claude') ? dir : undefined;
+}
+
+// Limits Claude reported outside its status line (a scheduled `claude -p` run's detailed output: utilization 0–1,
+// resetsAt in seconds), saved as the status line saves them, so the usage card and the schedules see the new window.
+export function noteLimits(account: string, windows: Record<string, { utilization?: number; resetsAt?: number }>) {
+  const c = usedConfig(account);
+  if (!c?.connected) return;
+  const file = join(DIR, `${c.key}.json`);
+  const saved = readJson(file).value ?? {};
+  const limits = { ...saved.rate_limits };
+  for (const k of ['five_hour', 'seven_day']) {
+    const w = windows[k];
+    if (typeof w?.utilization === 'number' && typeof w.resetsAt === 'number') limits[k] = { used_percentage: Math.round(w.utilization * 1000) / 10, resets_at: w.resetsAt };
+  }
+  writeFileSync(`${file}.devdeck-tmp`, JSON.stringify({ ...saved, rate_limits: limits }));
+  renameSync(`${file}.devdeck-tmp`, file);
 }
 
 // Pushed, not polled: one watcher on the saved numbers (no timer) while any page listens; Claude writing new ones
