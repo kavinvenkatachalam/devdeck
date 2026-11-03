@@ -105,7 +105,15 @@ export function SettingsView({ onSaved }) {
     setEmail(v.login.email);
     setPassword(v.login.password);
   };
-  useEffect(() => { load().catch(setErr); call('GET', '/tailscale').then(setTs).catch(() => {}); }, []);
+  // Tailscale again whenever you come back to the page (turned on in the menu bar meanwhile, say): no polling
+  useEffect(() => {
+    load().catch(setErr);
+    const check = () => document.visibilityState === 'visible' && call('GET', '/tailscale').then(setTs).catch(() => {});
+    check();
+    addEventListener('focus', check);
+    document.addEventListener('visibilitychange', check);
+    return () => { removeEventListener('focus', check); document.removeEventListener('visibilitychange', check); };
+  }, []);
   const save = async (extra = {}) => {
     setSaving(true);
     setErr(null);
@@ -120,7 +128,18 @@ export function SettingsView({ onSaved }) {
     setSaving(false);
   };
   const install = useInstall();
-  const share = async () => { setErr(null); try { setTs(await call('POST', '/tailscale/share')); } catch (e) { setErr(e); } };
+  // sharing: busy, the link to turn Serve on for the tailnet (when it isn't), or what went wrong; shown by the button
+  const [sharing, setSharing] = useState(null);
+  const share = async () => {
+    setSharing({ busy: true });
+    try {
+      const v = await call('POST', '/tailscale/share');
+      setTs(v);
+      setSharing(v.enable ? { enable: v.enable } : null);
+    } catch (e) {
+      setSharing({ err: e });
+    }
+  };
   if (!s) return html`<div class="scroll"><div class="muted">Loading…</div></div>`;
   const report = (i) => s.rootsReport[i] && s.rootsReport[i].root === roots[i] ? s.rootsReport[i] : null;
 
@@ -187,9 +206,11 @@ export function SettingsView({ onSaved }) {
         <div class="card-b" style="display:grid;gap:10px">
           ${!ts ? html`<span class="muted">Checking…</span>` : !ts.installed ? html`<span class="muted">Install Tailscale on the Mac and the phone and sign in to the same account.</span>` : html`
             <dl class="kv"><dt>URL</dt><dd>${ts.url ? html`<span class="mono ellipsis">${ts.url}</span><${Copy} text=${ts.url} />` : '—'}</dd><dt>Shared</dt><dd>${ts.shared ? 'Yes' : 'No'}</dd></dl>
-            ${!ts.running && html`<span class="small muted">Turn Tailscale on in the menu bar first.</span>`}
+            ${!ts.running && html`<span class="small muted">${ts.why || 'Turn Tailscale on in the menu bar first.'}</span>`}
             ${ts.sharedTo ? html`<span class="small muted">The phone link goes to the devdeck on port ${ts.sharedTo}, not this one.</span>`
-              : !ts.shared && html`<div class="row wrap"><button class="btn sm" disabled=${!ts.running} onClick=${share}>Share on port 8444</button><span class="small muted">Only your Tailscale account can open it. It uses its own port, so your tailnet's main address stays free.</span></div>`}`}
+              : !ts.shared && html`<div class="row wrap"><button class="btn sm" disabled=${!ts.running || sharing?.busy} onClick=${share}>${sharing?.busy ? 'Sharing…' : 'Share on port 8444'}</button><span class="small muted">Only your Tailscale account can open it. It uses its own port, so your tailnet's main address stays free.</span></div>
+              ${sharing?.enable && html`<span class="small">Tailscale needs Serve turned on for your tailnet first: <a href=${sharing.enable} target="_blank" rel="noopener">turn it on</a>, then Share again.</span>`}
+              ${sharing?.err && html`<${ErrorBox} error=${sharing.err} />`}`}`}
           <dl class="kv"><dt>App</dt><dd>${install.installed ? html`<span class="ok-text">Installed</span>`
             : install.ready ? html`<button class="btn sm primary" onClick=${install.run}><${Icon} name="smartphone" cls="sm" />Install devdeck</button>`
             : html`<span class="small muted">${isIOS() ? 'In Safari: Share → Add to Home Screen' : 'Open devdeck on the phone, then Install from here or from the browser menu (Add to Home screen)'}</span>`}</dd></dl>
