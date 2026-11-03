@@ -202,9 +202,10 @@ function App() {
         ${phone() && !install.installed && !store.get('installHidden', false) && html`
           <div class="install-banner">
             <img src="/icons/icon-192.png" alt="" />
-            <div class="grow"><b>Install devdeck</b><span>${install.ready ? 'Full screen, from your home screen'
+            <div class="grow"><b>${install.added ? 'devdeck is installed' : install.installing ? 'Installing devdeck…' : 'Install devdeck'}</b><span>${install.added ? 'Open it from your home screen'
+              : install.installing ? 'It shows on your home screen in a moment' : install.ready ? 'Full screen, from your home screen'
               : isIOS() ? 'In Safari: Share, then Add to Home Screen' : 'In Chrome: ⋮ menu, then Install app (or Add to Home screen)'}</span></div>
-            ${install.ready && html`<button class="btn sm primary" onClick=${install.run}>Install</button>`}
+            ${install.installing && !install.added ? html`<${Icon} name="loader-circle" cls="sm spin" />` : install.ready && html`<button class="btn sm primary" onClick=${install.run}>Install</button>`}
             <button class="icon-btn sm" title="Not now" onClick=${() => { store.set('installHidden', true); setHidden((n) => n + 1); }}><${Icon} name="x" cls="sm" /></button>
           </div>`}
         ${phone() && html`<${SetupCard} refresh=${refresh} compact />`}

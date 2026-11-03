@@ -12,5 +12,7 @@ self.addEventListener('activate', (e) => {
 });
 self.addEventListener('fetch', (e) => {
   if (e.request.mode !== 'navigate') return; // straight to the network, as without a service worker
-  e.respondWith(fetch(e.request).catch(async () => (await caches.match('/offline.html')) || Response.error()));
+  // a Mac that's off the tailnet doesn't refuse, it just never answers (a minute or more): give up after 8 s
+  const late = new Promise((_, no) => setTimeout(no, 8000));
+  e.respondWith(Promise.race([fetch(e.request), late]).catch(async () => (await caches.match('/offline.html')) || Response.error()));
 });

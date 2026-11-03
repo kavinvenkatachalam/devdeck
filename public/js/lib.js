@@ -243,12 +243,15 @@ export function Switch({ checked, onChange }) {
 // App-wide openers (menus, palette, sidebar) registered by App, so any row can call them.
 // Installing devdeck as an app (PWA). Chrome on Android says when it can (beforeinstallprompt, caught in index.html in
 // case it comes before this module), and that event drives our Install button. It comes only after some use of the
-// page, and never once installed; iOS has none (Share → Add to Home Screen). useInstall: { installed, ready, run }.
+// page, and never once installed; iOS has none (Share → Add to Home Screen). useInstall: { installed, ready, installing, added, run }.
+// Once accepted, Chrome installs it in the background and says when it's done (appinstalled); that's remembered, since
+// the page in the browser can't tell otherwise. It offers again if the app is removed.
 let installEvent = window.ddInstall ?? null;
+let installing = false;
 const installListeners = new Set();
 const installChanged = () => installListeners.forEach((f) => f());
-addEventListener('dd-installable', () => { installEvent = window.ddInstall; installChanged(); });
-addEventListener('appinstalled', () => { installEvent = window.ddInstall = null; installChanged(); });
+addEventListener('dd-installable', () => { installEvent = window.ddInstall; installing = false; store.set('appAdded', false); installChanged(); });
+addEventListener('appinstalled', () => { installEvent = window.ddInstall = null; installing = false; store.set('appAdded', true); installChanged(); });
 const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 export const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent);
 export function useInstall() {
@@ -258,10 +261,10 @@ export function useInstall() {
     if (!installEvent) return;
     installEvent.prompt();
     const { outcome } = await installEvent.userChoice;
-    if (outcome === 'accepted') installEvent = window.ddInstall = null;
+    if (outcome === 'accepted') (installEvent = window.ddInstall = null), (installing = true);
     installChanged();
   };
-  return { installed: standalone(), ready: !!installEvent, run };
+  return { installed: standalone(), ready: !!installEvent, installing, added: store.get('appAdded', false), run };
 }
 
 // ⟳ / Reload: every PR from GitHub, change counts and the list (ui.reload is set by App)
