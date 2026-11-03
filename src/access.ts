@@ -4,8 +4,7 @@
 // - from this page, not another site open in the browser (Origin, when a browser sends one);
 // - over Tailscale, from you: `tailscale serve` adds the visitor's login, and only the Mac's own login gets in, so
 //   other people's devices on a shared tailnet don't get a shell.
-import { capture } from './sh.ts';
-import { cleanEnv } from './tmux.ts';
+import { statusJson } from './tailscale.ts';
 
 export type Visitor = { host?: string; origin?: string; login?: string };
 export type Allowed = { port: number; tailnet?: { host: string; owner?: string }; extraHosts?: string[] };
@@ -41,7 +40,7 @@ let asked = 0;
 export function tailnetIdentity() {
   if (Date.now() - asked > 60_000) {
     asked = Date.now();
-    capture('tailscale', ['status', '--json'], { cwd: '/', env: cleanEnv() }).then((r) => {
+    statusJson().then((r) => {
       try {
         const j = JSON.parse(r.out);
         const host = String(j.Self?.DNSName || '').replace(/\.$/, '');
