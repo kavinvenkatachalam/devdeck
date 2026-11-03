@@ -92,6 +92,9 @@ export function claudeWorkDir(pane: string): { start: string; now: string } | un
 
 const ours = (statusLine: any) => typeof statusLine?.command === 'string' && statusLine.command.includes('devdeck-statusline');
 
+// Of two readings of a window, the later one: the later reset, then the higher use (use only grows until the reset)
+const later = (a?: Window, b?: Window) => (!a || (b && (b.resetsAt > a.resetsAt || (b.resetsAt === a.resetsAt && b.used > a.used))) ? b : a);
+
 // Each Claude config signed in to a plan (not an API key).
 function subscribed() {
   const now = Date.now();
@@ -103,6 +106,7 @@ function subscribed() {
     const win = (w: any): Window | undefined =>
       typeof w?.used_percentage === 'number' && w.resets_at * 1000 > now ? { used: w.used_percentage, resetsAt: w.resets_at * 1000 } : undefined;
     const limits = saved?.value?.rate_limits;
+    const learned = connected ? readJson(join(DIR, `${c.key}.learned.json`)) : null; // see noteLimits
     return [{
       key: c.key,
       dir: c.dir,
@@ -110,9 +114,9 @@ function subscribed() {
       account: (a.emailAddress || a.displayName || basename(c.dir)) as string,
       plan: PLANS[a.organizationType] || 'Subscription',
       connected,
-      at: saved?.mtime || 0,
-      fiveHour: win(limits?.five_hour),
-      week: win(limits?.seven_day),
+      at: Math.max(saved?.mtime || 0, learned?.mtime || 0),
+      fiveHour: later(win(limits?.five_hour), win(learned?.value?.five_hour)),
+      week: later(win(limits?.seven_day), win(learned?.value?.seven_day)),
     }];
   });
 }
@@ -123,8 +127,7 @@ function subscribed() {
 export function claudeAccounts() {
   const by = new Map<string, ReturnType<typeof subscribed>>();
   for (const c of subscribed()) by.set(c.account, [...(by.get(c.account) ?? []), c]);
-  const freshest = (ws: (Window | undefined)[]) =>
-    ws.filter((w): w is Window => !!w).reduce<Window | undefined>((a, b) => (!a || b.resetsAt > a.resetsAt || (b.resetsAt === a.resetsAt && b.used > a.used) ? b : a), undefined);
+  const freshest = (ws: (Window | undefined)[]) => ws.reduce(later, undefined);
   return [...by.entries()].map(([account, cs]) => ({
     account,
     plan: cs[0].plan,
@@ -148,19 +151,20 @@ export function configDirOf(account: string) {
 }
 
 // Limits Claude reported outside its status line (a scheduled `claude -p` run's detailed output: utilization 0–1,
-// resetsAt in seconds), saved as the status line saves them, so the usage card and the schedules see the new window.
+// resetsAt in seconds), so the usage card and the schedules see the new window. Kept in a file of devdeck's own,
+// beside the status line's: a terminal Claude redraws its status line with the numbers of its own last reply, which
+// may be an older window's, and would otherwise write over these.
 export function noteLimits(account: string, windows: Record<string, { utilization?: number; resetsAt?: number }>) {
   const c = usedConfig(account);
   if (!c?.connected) return;
-  const file = join(DIR, `${c.key}.json`);
-  const saved = readJson(file).value ?? {};
-  const limits = { ...saved.rate_limits };
+  const file = join(DIR, `${c.key}.learned.json`);
+  const limits = { ...readJson(file).value };
   for (const k of ['five_hour', 'seven_day']) {
     const w = windows[k];
     if (typeof w?.utilization === 'number' && typeof w.resetsAt === 'number') limits[k] = { used_percentage: Math.round(w.utilization * 1000) / 10, resets_at: w.resetsAt };
   }
-  writeFileSync(`${file}.devdeck-tmp`, JSON.stringify({ ...saved, rate_limits: limits }));
-  renameSync(`${file}.devdeck-tmp`, file);
+  writeFileSync(`${file}.tmp`, JSON.stringify(limits));
+  renameSync(`${file}.tmp`, file);
 }
 
 // Pushed, not polled: one watcher on the saved numbers (no timer) while any page listens; Claude writing new ones
