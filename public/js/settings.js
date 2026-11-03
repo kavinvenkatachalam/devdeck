@@ -212,6 +212,8 @@ export function SettingsView({ onSaved }) {
               ${sharing?.enable && html`<span class="small">Tailscale needs Serve turned on for your tailnet first: <a href=${sharing.enable} target="_blank" rel="noopener">turn it on</a>, then Share again.</span>`}
               ${sharing?.err && html`<${ErrorBox} error=${sharing.err} />`}`}`}
           <dl class="kv"><dt>App</dt><dd>${install.installed ? html`<span class="ok-text">Installed</span>`
+            : install.added ? html`<span class="small"><span class="ok-text">Installed</span> · open it from your home screen</span>`
+            : install.installing ? html`<span class="small muted"><${Icon} name="loader-circle" cls="sm spin" /> Installing… it shows on your home screen in a moment</span>`
             : install.ready ? html`<button class="btn sm primary" onClick=${install.run}><${Icon} name="smartphone" cls="sm" />Install devdeck</button>`
             : html`<span class="small muted">${isIOS() ? 'In Safari: Share → Add to Home Screen' : 'Open devdeck on the phone, then Install from here or from the browser menu (Add to Home screen)'}</span>`}</dd></dl>
         </div>
