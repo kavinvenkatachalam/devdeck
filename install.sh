@@ -15,6 +15,35 @@ say() { if [ -t 1 ]; then printf '\033[36m→ %s\033[0m\n' "$1"; else printf '�
 done_() { if [ -t 1 ]; then printf '\033[32m✓ %s\033[0m\n' "$1"; else printf '✓ %s\n' "$1"; fi; }
 die() { printf '%s\n' "$1" >&2; exit 1; }
 
+# A step that prints nothing while it works (it can take a minute): a spinner and the seconds so far, so it doesn't
+# look stuck. Its output is shown only if it fails.
+quietly() {
+  msg=$1
+  shift
+  log=$(mktemp)
+  "$@" >"$log" 2>&1 &
+  pid=$!
+  if [ -t 1 ]; then
+    i=0
+    while kill -0 "$pid" 2>/dev/null; do
+      case $((i % 4)) in 0) c='⠋' ;; 1) c='⠙' ;; 2) c='⠸' ;; *) c='⠴' ;; esac
+      printf '\r\033[36m%s %s\033[0m \033[2m%ss\033[0m\033[K' "$c" "$msg" $((i / 5))
+      sleep 0.2
+      i=$((i + 1))
+    done
+    printf '\r\033[K'
+  else
+    say "$msg"
+  fi
+  if wait "$pid"; then
+    rm -f "$log"
+  else
+    cat "$log" >&2
+    rm -f "$log"
+    return 1
+  fi
+}
+
 preflight() {
   [ "$(uname -s)" = Darwin ] || die "devdeck runs on macOS."
   [ "$(uname -m)" = arm64 ] || die "devdeck needs a Mac with Apple Silicon (M1 or later)."
@@ -38,16 +67,17 @@ brew_ready() {
 
 # Homebrew 6+ installs from another tap only once you've trusted it; older ones have no `brew trust`.
 trust() {
-  if "$BREW" trust --help >/dev/null 2>&1; then "$BREW" trust --formula "$FORMULA" >/dev/null; fi
+  if "$BREW" trust --help >/dev/null 2>&1; then quietly "Getting Homebrew ready" "$BREW" trust --formula "$FORMULA"; fi
 }
 
 main() {
+  say "Setting up devdeck"
   preflight
   brew_ready
   trust
   if "$BREW" list --versions devdeck >/dev/null 2>&1; then
+    quietly "Checking for a new devdeck" "$BREW" update --quiet
     say "Updating devdeck"
-    "$BREW" update --quiet
     "$BREW" upgrade "$FORMULA" || true # already the latest: nothing to do
   else
     say "Installing devdeck (with Node and tmux)"

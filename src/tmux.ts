@@ -42,10 +42,17 @@ const kept = (k: string) => KEEP.includes(k) || k.startsWith('LC_');
 export function cleanEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { TERM: 'xterm-256color' };
   for (const [k, v] of Object.entries(process.env)) if (kept(k)) env[k] = v;
+  // a devdeck started without a UTF-8 locale (by launchd, the app, some terminals) still gives its terminals one
+  if (!/utf-?8/i.test(env.LC_ALL || env.LC_CTYPE || env.LANG || '')) {
+    delete env.LC_ALL;
+    env.LC_CTYPE = 'en_US.UTF-8';
+  }
   return env;
 }
 
-export const tmuxArgs = (...args: string[]) => ['-L', SOCKET, '-f', CONF, ...args];
+// -u: UTF-8 whatever the locale says. Without it, tmux in an ASCII locale prints the tabs between the fields devdeck
+// asks for as "_", and no session could be read.
+export const tmuxArgs = (...args: string[]) => ['-u', '-L', SOCKET, '-f', CONF, ...args];
 
 // The tmux binary itself. A tmux earlier on PATH can be a wrapper script (HexoKit's rk puts a guard there that costs
 // ~14 ms and two more processes a call); devdeck calls tmux several times a refresh and always names its own server

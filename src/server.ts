@@ -17,7 +17,7 @@ import { addFolder, cleanFolder, folders, isLocked, lockedFolders, lockFolder, o
 import { refreshPr, refreshPrs } from './prs.ts';
 import { hostStats } from './host.ts';
 import { checkNow, runUpdate, startUpdateChecks, updateInfo } from './update.ts';
-import { KEEP_DAYS, addSchedule, preview, pruneRuns, removeSchedule, runHistory, runLog, runNow, runsOf, scheduleList, startSchedules, updateSchedule } from './schedules.ts';
+import { KEEP_DAYS, addSchedule, catchUp, preview, pruneRuns, removeSchedule, runHistory, runLog, runNow, runsOf, scheduleList, startSchedules, updateSchedule } from './schedules.ts';
 import { addWorktree, recentBranches, repoAt, worktrees } from './repo.ts';
 import { expandHome, loadSettings, saveSettings } from './settings.ts';
 import { capture, CmdError, run, stripAnsi, tail } from './sh.ts';
@@ -625,6 +625,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url || '/', 'http://x');
+  catchUp(); // a schedule due while the Mac slept
   try {
     const why = refused(req);
     if (why) throw new HttpError(403, why);
@@ -646,6 +647,7 @@ const server = createServer(async (req, res) => {
   } catch (e) {
     const status = e instanceof HttpError ? e.status : e instanceof CmdError ? 400 : e instanceof SyntaxError ? 400 : 500;
     const hint = e instanceof HttpError || e instanceof CmdError ? e.hint : undefined;
+    if (status === 500) console.error(`${req.method} ${url.pathname}:`, e); // a bug: its stack, in devdeck's log
     if (!res.headersSent) send(res, status, { error: e instanceof Error ? e.message : String(e), hint });
   }
 });

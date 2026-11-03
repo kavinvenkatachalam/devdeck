@@ -58,13 +58,21 @@ async function download(rel: Release, to: string) {
   if (!r.ok || !r.body) fail(`download failed (${r.status})`);
   const hash = createHash('sha256');
   const out = createWriteStream(to);
+  // how far it's got, on one line that updates (in a terminal; it's 124 MB)
+  const total = Number(r.headers.get('content-length')) || 0;
+  const mb = (n: number) => Math.round(n / 1e6);
+  let got = 0, shown = -1;
   for await (const chunk of r.body as unknown as AsyncIterable<Uint8Array>) {
     hash.update(chunk);
+    got += chunk.length;
+    const pct = total ? Math.floor((got / total) * 100) : 0;
+    if (process.stdout.isTTY && total && pct !== shown) process.stdout.write(`\r  ${String((shown = pct)).padStart(3)}%  ${mb(got)} of ${mb(total)} MB\x1b[K`);
     if (!out.write(chunk)) await new Promise((res) => out.once('drain', res));
   }
+  if (process.stdout.isTTY && total) process.stdout.write('\r\x1b[K');
   await new Promise((res) => out.end(res));
-  const got = hash.digest('hex');
-  if (got !== rel.sha256) fail(`${rel.name} doesn't match the release's checksum (got ${got}): not installing it`);
+  const sum = hash.digest('hex');
+  if (sum !== rel.sha256) fail(`${rel.name} doesn't match the release's checksum (got ${sum}): not installing it`);
 }
 
 // Quit it the way the Dock would, so it closes cleanly; then wait for it to go.

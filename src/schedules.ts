@@ -232,6 +232,7 @@ export function runLog(id: string, at: number) {
 
 // ---------- the timer ----------
 let timer: NodeJS.Timeout | undefined;
+let wakeAt = 0; // when the timer should go off, on the clock
 function arm() {
   clearTimeout(timer);
   timer = undefined;
@@ -242,8 +243,16 @@ function arm() {
   for (const s of on) try { dueOf(s, accounts); } catch {}
   // the top of the next minute, or a reset due sooner
   const now = Date.now();
-  timer = setTimeout(tick, Math.max(500, Math.min(60_000 - (now % 60_000) + 500, ...[...resets.values()].map((r) => r + AFTER_RESET - now))));
+  const wait = Math.max(500, Math.min(60_000 - (now % 60_000) + 500, ...[...resets.values()].map((r) => r + AFTER_RESET - now)));
+  wakeAt = now + wait;
+  timer = setTimeout(tick, wait);
   timer.unref();
+}
+
+// A timer counts only the time the Mac is awake, so after a sleep it can be a minute late. Any request (the page asks
+// as soon as the lid opens) checks the clock: past due, it goes off now.
+export function catchUp() {
+  if (timer && Date.now() > wakeAt + 1000) tick();
 }
 
 function tick() {
