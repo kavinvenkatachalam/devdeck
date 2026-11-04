@@ -166,7 +166,7 @@ function App() {
       addHere=${addHere} adding=${adding} onNewWorktree=${() => setSheet({ mode: 'worktree', folder: '' })} /></div></div>`;
   else if (view === 'schedules') main = html`<div class="view">${pageHead('Schedules')}<div class="pane"><${SchedulesView} /></div></div>`;
   else if (view === 'tools') main = html`<div class="view">${pageHead('Tools')}<div class="pane"><${ToolsView} /></div></div>`;
-  else if (view === 'settings') main = html`<div class="view">${pageHead('Settings')}<div class="pane"><${SettingsView} onSaved=${refresh} /></div></div>`;
+  else if (view === 'settings') main = html`<div class="view">${pageHead('Settings')}<div class="pane"><${SettingsView} data=${data} onSaved=${refresh} /></div></div>`;
   else if (s) main = html`<${SessionView} key=${s.name} s=${s} co=${s.checkout && idx.get(s.checkout)} siblings=${siblings} refresh=${refresh} onBack=${back} openWorktree=${openWorktree} openSession=${openSession} goHome=${goHome}
       onRenamed=${(name) => sessionRenamed(s.name, name)} />`;
   else if (w) main = html`<${WorktreeView} key=${w.path} c=${w} sessions=${data.sessions} refresh=${refresh} onBack=${back} openSession=${openSession} goHome=${goHome} />`;

@@ -88,7 +88,9 @@ function KeysPick() {
     </div></dd>`)}</dl>`;
 }
 
-export function SettingsView({ onSaved }) {
+// The license and the dev login are ToolJet's: shown only when one of your projects is ToolJet (as Env is).
+export function SettingsView({ data, onSaved }) {
+  const tooljet = data?.projects.some((p) => p.tooljet);
   const [s, setS] = useState(null);
   const [roots, setRoots] = useState([]);
   const [license, setLicense] = useState('');
@@ -175,6 +177,7 @@ export function SettingsView({ onSaved }) {
         </div>
       </div>
 
+      ${tooljet && html`
       <div class="card">
         <div class="card-h"><h3><${Icon} name="sparkles" />ToolJet license</h3>${s.license ? html`<span class="pill ok">${s.license}</span>` : html`<span class="pill">None</span>`}</div>
         <div class="card-b" style="display:grid;gap:10px">
@@ -198,7 +201,7 @@ export function SettingsView({ onSaved }) {
           </div>
           <div class="row"><span class="grow"></span><button class="btn primary sm" disabled=${saving} onClick=${() => save()}>Save</button></div>
         </div>
-      </div>
+      </div>`}
 
       <div class="card">
         <div class="card-h"><h3><${Icon} name="smartphone" />Phone access</h3>
