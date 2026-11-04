@@ -900,6 +900,7 @@ button.where-chip:hover { color: var(--text); background: var(--hover); }
 /* schedules */
 .sched.off .card-b { opacity: .6; }
 .sched .card-h h3 { flex: 1; }
+.kv dd.sched-next { flex-wrap: wrap; }
 .time-field { position: relative; display: inline-flex; align-items: center; }
 .time-field input { width: 92px; padding-right: 28px; }
 .time-field > .i { position: absolute; right: 10px; pointer-events: none; }

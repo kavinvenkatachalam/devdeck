@@ -17,9 +17,11 @@ import { cleanEnv } from './tmux.ts';
 export type When =
   | { kind: 'time'; time: string; days: number[] } // 09:30 on these weekdays (0 = Sunday)
   | { kind: 'cron'; expr: string }
-  | { kind: 'reset'; account: string; window: 'fiveHour' | 'week'; quiet?: Quiet };
+  | { kind: 'reset'; account: string; window: 'fiveHour' | 'week'; quiet?: Quiet; idle?: false }; // idle: false: not when none is running
 export type Quiet = { from: string; to: string }; // not between these times (23:00–07:00): a reset then waits for the end
-export type Schedule = { id: string; name: string; on: boolean; cmd: string; cwd: string; when: When };
+// account: the Claude account a time or cron one's `claude` signs in as (a reset one's is its when's).
+// skip: the due time (a reset's: the reset) not to run for.
+export type Schedule = { id: string; name: string; on: boolean; cmd: string; cwd: string; when: When; account?: string; skip?: number };
 export type Run = { at: number; status: 'ok' | 'failed' | 'running' | 'unknown'; code?: number; ms?: number };
 
 const FILE = join(dirname(SETTINGS), 'schedules.json');
@@ -85,27 +87,48 @@ export function nextCron(c: Cron, from: number) {
   return 0;
 }
 
+const accountOf = (s: Schedule) => (s.when.kind === 'reset' ? s.when.account : s.account);
+const WINDOW_MS = { fiveHour: 5 * 3600_000, week: 7 * 864e5 };
 const cronOf = (w: When) => (w.kind === 'cron' ? w.expr : w.kind === 'time' ? `${Number(w.time.split(':')[1])} ${Number(w.time.split(':')[0])} * * ${w.days.join(',')}` : '');
 
 // ---------- when each one is due ----------
 const next = new Map<string, number>(); // id → next time (time and cron), worked out once and again after each run
 const resets = new Map<string, number>(); // id → the reset it waits for: kept, since Claude's reading of it lapses at the reset
 
-// The next time a schedule is due, or why it can't be said.
-function dueOf(s: Schedule, accounts = claudeAccounts()): { at?: number; why?: string } {
+// The next time a schedule is due, or why it can't be said; past a skipped one, the one after it (for a reset, that's
+// known only once Claude is used after the skipped one).
+function dueOf(s: Schedule, accounts = claudeAccounts()): { at?: number; why?: string; skipped?: number } {
+  const { key, ...due } = upcoming(s, accounts);
+  if (!due.at || key !== s.skip) return due;
+  if (s.when.kind === 'reset') return { skipped: due.at, why: 'The one after shows once Claude is used again' };
+  const after = nextCron(parseCron(cronOf(s.when)), due.at);
+  return after ? { at: after, skipped: due.at } : { skipped: due.at, why: 'Never again: no such date' };
+}
+
+// key: what a skip names: the due time, or for a reset, the reset (its due time moves when it falls in quiet hours)
+function upcoming(s: Schedule, accounts: ReturnType<typeof claudeAccounts>): { at?: number; why?: string; key?: number } {
   if (s.when.kind !== 'reset') {
     if (!next.has(s.id)) next.set(s.id, nextCron(parseCron(cronOf(s.when)), Date.now()));
-    return next.get(s.id) ? { at: next.get(s.id) } : { why: 'Never: no such date' };
+    return next.get(s.id) ? { at: next.get(s.id), key: next.get(s.id) } : { why: 'Never: no such date' };
   }
-  const { account, window } = s.when;
+  const { account, window, quiet } = s.when;
   const a = accounts.find((x) => x.account === account);
   const w = a?.[window];
   if (w) resets.set(s.id, w.resetsAt);
-  const at = resets.get(s.id);
-  if (at) return { at: afterQuiet(at + AFTER_RESET, s.when.quiet) };
+  const now = Date.now();
+  const reset = resets.get(s.id);
+  // late, in the quiet hours: at their end
+  const notQuiet = (at: number) => (at < now && afterQuiet(now, quiet) > now ? afterQuiet(now, quiet) : afterQuiet(at, quiet));
+  if (reset) return { at: notQuiet(reset + AFTER_RESET), key: reset };
+  // none running (it ended unused, or devdeck was off at its reset): start one, outside the quiet hours. Not again
+  // within a window's length of the last run, in case that one didn't start one (signed out, say).
+  if (a?.connected && s.when.idle !== false) {
+    const after = (runsOf(s.id, 1)[0]?.at ?? 0) + WINDOW_MS[window];
+    return { at: notQuiet(Math.max(after, now - (now % 60_000))), key: after }; // overdue: this minute
+  }
   if (!a) return { why: `${account} isn't signed in to Claude on this Mac` };
-  if (!a.connected) return { why: 'Connect Claude usage for this account (the Overview\'s Claude usage card) so devdeck knows when it resets' };
-  return { why: 'Waiting to learn the next reset: it shows once Claude is used on this account' };
+  if (a.connected) return { why: `No ${window === 'week' ? 'weekly' : '5-hour'} window running now: one starts when you next use Claude on this account, and its reset shows here` };
+  return { why: 'Connect Claude usage for this account (the Overview\'s Claude usage card) so devdeck knows when it resets' };
 }
 
 // The time, or if that falls in the quiet hours, their end.
@@ -138,6 +161,7 @@ function fire(s: Schedule, at: number, why: string) {
     return false; // run already, by this devdeck or another
   }
   const cwd = expandHome(s.cwd || '~');
+  const account = accountOf(s);
   writeSync(fd, `$ ${s.cmd}\n[devdeck] ${why}, in ${s.cwd || '~'}, ${new Date().toString()}\n\n`);
   running.set(s.id, at);
   const started = Date.now();
@@ -147,8 +171,8 @@ function fire(s: Schedule, at: number, why: string) {
   const shell = /\/(zsh|bash)$/.test(process.env.SHELL || '') ? process.env.SHELL! : '/bin/zsh';
   const p = spawn(shell, ['-ilc', 'exec 1>&3 2>&3 3>&-; eval "$DEVDECK_CMD"'], {
     cwd: existsSync(cwd) ? cwd : homedir(),
-    // waiting on an account's limit: Claude runs signed in as that account
-    env: { ...cleanEnv(), TERM: 'dumb', DEVDECK_CMD: s.cmd, ...(s.when.kind === 'reset' && configDirOf(s.when.account) ? { CLAUDE_CONFIG_DIR: configDirOf(s.when.account) } : {}) },
+    // with an account: Claude runs signed in as that account
+    env: { ...cleanEnv(), TERM: 'dumb', DEVDECK_CMD: s.cmd, ...(account && configDirOf(account) ? { CLAUDE_CONFIG_DIR: configDirOf(account) } : {}) },
     stdio: ['ignore', 'ignore', 'ignore', fd],
     detached: true,
   });
@@ -161,7 +185,7 @@ function fire(s: Schedule, at: number, why: string) {
       closeSync(fd);
     } catch {}
     pruneRuns();
-    if (s.when.kind === 'reset') learnLimits(s.when.account, logOf(s.id, at));
+    if (account) learnLimits(account, logOf(s.id, at));
   };
   p.on('error', (e) => { try { writeSync(fd, `${e.message}\n`); } catch {} done('127'); });
   p.on('exit', (code, signal) => done(signal ? `signal ${signal}` : String(code)));
@@ -240,10 +264,11 @@ function arm() {
   if (!on.length) return;
   // each one's next time, worked out now (later would skip one due before then)
   const accounts = claudeAccounts();
-  for (const s of on) try { dueOf(s, accounts); } catch {}
-  // the top of the next minute, or a reset due sooner
   const now = Date.now();
-  const wait = Math.max(500, Math.min(60_000 - (now % 60_000) + 500, ...[...resets.values()].map((r) => r + AFTER_RESET - now)));
+  const soon: number[] = [];
+  for (const s of on) try { const at = dueOf(s, accounts).at; if (at && at > now) soon.push(at); } catch {}
+  // the top of the next minute, or one due sooner (a reset can be due at any second)
+  const wait = Math.max(500, Math.min(60_000 - (now % 60_000) + 500, ...soon.map((at) => at - now)));
   wakeAt = now + wait;
   timer = setTimeout(tick, wait);
   timer.unref();
@@ -302,8 +327,11 @@ function clean(b: any, id: string): Schedule {
       if (!ok(w.quiet.from) || !ok(w.quiet.to) || w.quiet.from === w.quiet.to) throw new Error('pick the hours it should not run');
       when.quiet = { from: w.quiet.from, to: w.quiet.to };
     }
+    if (w.idle === false) when.idle = false;
   } else throw new Error('pick when it runs');
-  return { id, name: String(b.name ?? '').trim() || cmd.split('\n')[0].slice(0, 60), on: b.on !== false, cmd, cwd: String(b.cwd ?? '').trim() || '~', when };
+  const skip = Number.isFinite(b.skip) ? { skip: b.skip } : {};
+  const account = when.kind !== 'reset' && b.account ? { account: String(b.account) } : {};
+  return { id, name: String(b.name ?? '').trim() || cmd.split('\n')[0].slice(0, 60), on: b.on !== false, cmd, cwd: String(b.cwd ?? '').trim() || '~', when, ...account, ...skip };
 }
 
 const forget = (id: string) => { next.delete(id); resets.delete(id); };
@@ -319,6 +347,8 @@ export function updateSchedule(id: string, b: any) {
   const list = loadSchedules();
   const i = list.findIndex((s) => s.id === id);
   if (i < 0) throw new Error('no such schedule');
+  // skip: true skips the next run (not one after an earlier skip), null takes it back
+  if ('skip' in b) b = { ...b, skip: b.skip ? upcoming(list[i], claudeAccounts()).key : undefined };
   list[i] = clean({ ...list[i], ...b }, id);
   forget(id);
   save(list);
@@ -364,13 +394,13 @@ export function scheduleList() {
   const accounts = claudeAccounts();
   return {
     schedules: loadSchedules().map((s) => {
-      let due: { at?: number; why?: string };
+      let due: ReturnType<typeof dueOf>;
       try {
         due = s.on ? dueOf(s, accounts) : {};
       } catch (e) {
         due = { why: (e as Error).message };
       }
-      return { ...s, next: due.at ?? null, why: due.why ?? null, last: runsOf(s.id, 1)[0] ?? null };
+      return { ...s, next: due.at ?? null, why: due.why ?? null, skipped: due.skipped ?? null, last: runsOf(s.id, 1)[0] ?? null };
     }),
     accounts: accounts.map((a) => ({ account: a.account, connected: a.connected })),
   };

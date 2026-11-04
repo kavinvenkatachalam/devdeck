@@ -25,10 +25,10 @@ function daysText(days) {
   return days.map((d) => DAY_NAMES[d]).join(', ');
 }
 
-const whenText = (w) =>
-  w.kind === 'time' ? `${daysText(w.days)} at ${w.time}`
-  : w.kind === 'cron' ? html`Cron <span class="mono">${w.expr}</span>`
-  : `When the ${WINDOWS[w.window]} limit resets${w.quiet ? `, not ${w.quiet.from}–${w.quiet.to}` : ''} · ${w.account}`;
+const whenText = (w, account) =>
+  w.kind === 'time' ? `${daysText(w.days)} at ${w.time}${account ? ` · ${account}` : ''}`
+  : w.kind === 'cron' ? html`Cron <span class="mono">${w.expr}</span>${account ? ` · ${account}` : ''}`
+  : `When the ${WINDOWS[w.window]} limit resets${w.idle === false ? '' : ' or no window is running'}${w.quiet ? `, not ${w.quiet.from}–${w.quiet.to}` : ''} · ${w.account}`;
 
 const RUN = { ok: ['ok', 'Done'], failed: ['bad', 'Failed'], running: ['run', 'Running'], unknown: ['off', 'No result'] };
 const runText = (r) => `${RUN[r.status][1]}${r.status === 'failed' && r.code !== undefined ? ` (exit ${r.code})` : ''}${r.ms !== undefined ? ` · ${r.ms < 1000 ? `${r.ms} ms` : `${Math.round(r.ms / 1000)} s`}` : ''}`;
@@ -152,11 +152,23 @@ function Editor({ initial, accounts, onClose, onSaved }) {
             <${TimeField} value=${(w.quiet ?? NIGHT).to} disabled=${!w.quiet} onChange=${(to) => setWhen({ quiet: { ...w.quiet, to } })} />
           </div>
           ${w.quiet && html`<div class="small muted">A reset in these hours waits until ${w.quiet.to}, so the next window starts when you're back.</div>`}
+          <div class="row wrap sched-time">
+            <${Switch} checked=${w.idle !== false} onChange=${(on) => setWhen({ idle: on ? undefined : false })} />
+            <span>Start a new window when none is running</span>
+          </div>
+          <div class="small muted">${w.idle !== false ? 'When a window ends unused, or devdeck was off at a reset, it starts the next one' + (w.quiet ? ' (not at night)' : '') + '. If a run doesn\'t start one, it tries again after a window\'s length.' : 'Only at a reset: when no window is running, the next one starts when you next use Claude.'}</div>
           <div class="small muted">Runs a minute after the limit resets, signed in as this account. Sending Claude a message starts the next window then, instead of when you're next back.
             With Claude's detailed output, devdeck also learns when that window resets, so it runs again then without you:${" "}
             <span class="mono">${START}</span>${s.cmd.trim() !== START && html` <button class="linkish" style="display:inline" onClick=${() => setS({ ...s, cmd: START })}>Use this command</button>`}
             ${account && !account.connected && html` <b class="warn-text">Connect this account's Claude usage on the Overview first: that's how devdeck learns when it resets.</b>`}</div>`
           : html`<div class="small muted">No Claude subscription is signed in on this Mac.</div>`)}
+        ${w.kind !== 'reset' && accounts.length > 0 && html`
+          <div class="field"><label>Claude account</label>
+            <select value=${s.account || ''} onChange=${(e) => setS({ ...s, account: e.target.value })} style="width:auto;min-width:220px">
+              <option value="">As in your terminal</option>
+              ${accounts.map((a) => html`<option value=${a.account}>${a.account}</option>`)}
+            </select>
+            <div class="hint">The account <span class="mono">claude</span> runs signed in as, if the command runs it.</div></div>`}
         ${w.kind !== 'reset' && next && html`<div class="small muted">${Array.isArray(next) ? (next.length ? `Next: ${next.map(when).join(' · ')}` : 'This never comes round.') : html`<span class="bad-text">${next}</span>`}</div>`}
         <div class="row"><span class="grow"></span>
           <button class="btn sm" onClick=${onClose}>Cancel</button>
@@ -233,6 +245,8 @@ function Item({ s, onEdit, refresh }) {
   const act = async (fn) => { try { await fn(); } catch (e) { toast(e.message); } refresh(); };
   const toggle = (on) => act(() => call('PUT', `/schedules/${s.id}`, { on }));
   const runNow = () => act(async () => { await call('POST', `/schedules/${s.id}/run`); setHistory(true); toast('Started'); });
+  // just the next run, not the schedule: it carries on after that one
+  const skip = (on) => act(() => call('PUT', `/schedules/${s.id}`, { skip: on }));
   const remove = async () => (await ask({ title: `Delete "${s.name}"?`, body: 'Its run logs go too.', ok: 'Delete', danger: true })) && act(() => call('DELETE', `/schedules/${s.id}`));
   const more = (e) => ui.openMenu(e.currentTarget, [
     { icon: 'play', label: 'Run now', run: runNow },
@@ -251,8 +265,10 @@ function Item({ s, onEdit, refresh }) {
       </div>
       <div class="card-b">
         <dl class="kv">
-          <dt>When</dt><dd>${whenText(s.when)}</dd>
-          <dt>Next</dt><dd class=${s.next ? '' : 'muted'}>${!s.on ? 'Off' : s.next ? when(s.next) : s.why || '—'}</dd>
+          <dt>When</dt><dd>${whenText(s.when, s.account)}</dd>
+          <dt>Next</dt><dd class="sched-next">${!s.on ? html`<span class="muted">Off</span>` : html`
+            ${s.next ? html`<span>${s.next <= Date.now() ? 'Now' : when(s.next)}</span>${!s.skipped && html`<button class="linkish" title="Skip just this run" onClick=${() => skip(true)}>Skip</button>`}` : html`<span class="muted">${s.why || '—'}</span>`}
+            ${s.skipped && html`<span class="muted small">· ${when(s.skipped)} skipped</span><button class="linkish" onClick=${() => skip(null)}>Undo</button>`}`}</dd>
           <dt>Command</dt><dd><span class="mono ellipsis" title=${s.cmd}>${s.cmd}</span></dd>
           <dt>Folder</dt><dd class="mono">${shortPath(s.cwd)}</dd>
           <dt>Last run</dt><dd>${s.last ? html`<button class="linkish" onClick=${() => setHistory(!history)}>${when(s.last.at)} · ${runText(s.last)}<${Icon} name=${history ? 'chevron-down' : 'chevron-right'} cls="xs" /></button>` : html`<span class="muted">Not yet</span>`}</dd>
