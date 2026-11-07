@@ -23,7 +23,7 @@ import { expandHome, loadSettings, saveSettings } from './settings.ts';
 import { capture, CmdError, run, stripAnsi, tail } from './sh.ts';
 import { logFile, pastRuns, STATE_ROOT, updateState } from './state.ts';
 import { shareOnTailnet, tailscaleStatus } from './tailscale.ts';
-import { cleanEnv, createSession, killSession, listSessions, moveSession, paneProgram, oneTerminalEach, orderSessions, renameSession, passLinks, reply, safeName, scrubServerEnv, setFolder, tmux, TMUX, tmuxArgs, turnsEnded, VIEWER_SEP, withAgents } from './tmux.ts';
+import { cleanEnv, createSession, killSession, listSessions, moveSession, paneProgram, oneTerminalEach, orderSessions, renameSession, passLinks, reply, safeName, scrubServerEnv, setFolder, tmux, TMUX, tmuxArgs, turnsEnded, withAgents } from './tmux.ts';
 import { tools } from './workspace.ts';
 
 const HOST = process.env.HOST || '127.0.0.1';
@@ -652,8 +652,9 @@ const server = createServer(async (req, res) => {
   }
 });
 
-// One WebSocket = one terminal view. It attaches a throwaway viewer session grouped with the real one,
-// so the phone and the laptop can look at different tabs of the same session at once.
+// One WebSocket = one terminal view: a tmux client attached to the session itself (the phone and the laptop are
+// two clients of it). Not a throwaway session grouped with it, as before: tmux started a shell for each of those and
+// dropped it at once, and now and then (about one in 30) that shell hung for good, holding a terminal.
 const wss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', (req, socket, head) => {
@@ -680,9 +681,11 @@ wss.on('connection', async (ws, url: URL) => {
   const rows = Number(url.searchParams.get('rows')) || 24;
   if (!(await listSessions()).some((s) => s.name === session)) return ws.close(4404, 'no such session');
 
-  const viewer = `${session}${VIEWER_SEP}${Math.random().toString(36).slice(2, 8)}`;
-  const args = ['new-session', '-t', session, '-s', viewer, ';', 'set-option', 'destroy-unattached', 'on'];
-  if (/^\d+$/.test(index)) args.push(';', 'select-window', '-t', `${viewer}:${index}`);
+  // by its id ($3), which a rename doesn't change
+  const sid = (await tmux('display-message', '-p', '-t', `=${session}:`, '#{session_id}').catch(() => '')).trim();
+  if (!sid) return ws.close(4404, 'no such session');
+  const args = ['attach-session', '-t', sid];
+  if (/^\d+$/.test(index)) args.push(';', 'select-window', '-t', `${sid}:${index}`);
   const term = pty.spawn(TMUX, tmuxArgs(...args), { name: 'xterm-256color', cols, rows, cwd: homedir(), env: cleanEnv() });
 
   // A slow link (a phone on mobile data) can't take output as fast as a program makes it: past 1 MB waiting to go out,
@@ -720,7 +723,7 @@ wss.on('connection', async (ws, url: URL) => {
     if (/\x1b\[<6[45];/.test(d)) scrolledBack = true; // wheel
     else if (scrolledBack && !MOUSE.test(d)) {
       scrolledBack = false;
-      if ((await tmux('display-message', '-p', '-t', viewer, '#{pane_in_mode}')).trim() === '1') await tmux('send-keys', '-X', '-t', viewer, 'cancel');
+      if ((await tmux('display-message', '-p', '-t', sid, '#{pane_in_mode}')).trim() === '1') await tmux('send-keys', '-X', '-t', sid, 'cancel');
     }
     term.write(d);
   };
@@ -728,7 +731,7 @@ wss.on('connection', async (ws, url: URL) => {
     const n = lines;
     lines = 0;
     if (!n) return;
-    const [alt, mouse, inMode] = (await tmux('display-message', '-p', '-t', viewer, '#{alternate_on} #{mouse_any_flag} #{pane_in_mode}')).trim().split(' ');
+    const [alt, mouse, inMode] = (await tmux('display-message', '-p', '-t', sid, '#{alternate_on} #{mouse_any_flag} #{pane_in_mode}')).trim().split(' ');
     if (inMode !== '1' && (alt === '1' || mouse === '1')) {
       wheelRest += n;
       const k = Math.trunc(wheelRest / 3);
@@ -736,42 +739,42 @@ wss.on('connection', async (ws, url: URL) => {
       if (k) term.write(`\x1b[<${k > 0 ? 65 : 64};${at}M`.repeat(Math.abs(k)));
     } else if (n < 0) {
       scrolledBack = true;
-      await tmux('copy-mode', '-e', '-t', viewer, ';', 'send-keys', '-X', '-t', viewer, '-N', String(-n), 'scroll-up');
+      await tmux('copy-mode', '-e', '-t', sid, ';', 'send-keys', '-X', '-t', sid, '-N', String(-n), 'scroll-up');
     }
-    else if (inMode === '1') await tmux('send-keys', '-X', '-t', viewer, '-N', String(n), 'scroll-down');
+    else if (inMode === '1') await tmux('send-keys', '-X', '-t', sid, '-N', String(n), 'scroll-down');
   };
   // Search: tmux's own copy-mode search, so it covers the whole history (the browser terminal only holds the screen)
   // and tmux highlights the matches. A new word searches up from the bottom; up / down step through the matches; end
   // goes back to the live screen. The reply says how many there are.
   let lastDir = 'up';
   const find = async (q: string, dir: string) => {
-    const inMode = (await tmux('display-message', '-p', '-t', viewer, '#{pane_in_mode}')).trim() === '1';
+    const inMode = (await tmux('display-message', '-p', '-t', sid, '#{pane_in_mode}')).trim() === '1';
     if (dir === 'end') {
-      if (inMode) await tmux('send-keys', '-X', '-t', viewer, 'cancel');
+      if (inMode) await tmux('send-keys', '-X', '-t', sid, 'cancel');
       scrolledBack = false;
       return;
     }
     if (!q) return;
     scrolledBack = true;
     if (dir === 'new' || !inMode) {
-      await tmux('copy-mode', '-t', viewer, ';', 'send-keys', '-X', '-t', viewer, 'history-bottom', ';', 'send-keys', '-X', '-t', viewer, 'end-of-line', ';', 'send-keys', '-X', '-t', viewer, 'search-backward-text', q);
+      await tmux('copy-mode', '-t', sid, ';', 'send-keys', '-X', '-t', sid, 'history-bottom', ';', 'send-keys', '-X', '-t', sid, 'end-of-line', ';', 'send-keys', '-X', '-t', sid, 'search-backward-text', q);
       lastDir = 'up';
     } else {
       // tmux leaves the cursor on a match's start going up and on its end going down, so the first step the other way
       // finds the same match again: turning around takes two
       const steps = dir === lastDir ? '1' : '2';
-      await tmux('send-keys', '-X', '-N', steps, '-t', viewer, dir === 'up' ? 'search-backward-text' : 'search-forward-text', q);
+      await tmux('send-keys', '-X', '-N', steps, '-t', sid, dir === 'up' ? 'search-backward-text' : 'search-forward-text', q);
       lastDir = dir;
     }
-    const [count, partial] = (await tmux('display-message', '-p', '-t', viewer, '#{search_count} #{search_count_partial}')).trim().split(' ');
+    const [count, partial] = (await tmux('display-message', '-p', '-t', sid, '#{search_count} #{search_count_partial}')).trim().split(' ');
     if (ws.readyState === ws.OPEN) ws.send(Buffer.from(JSON.stringify({ found: Number(count) || 0, more: partial === '1' })));
   };
   // Split panes are tmux's, so every device sees the same layout and a border drag resizes them. Split, the window
   // gets a header line over each pane (tmux's pane-border-status); the browser draws a pane's title and buttons on it.
   // A pane's own buttons act on that pane; closing one that runs something (Claude, a server) asks first.
   const pane = async (m: { do?: string; pane?: string; force?: boolean }) => {
-    const ids = (await tmux('list-panes', '-t', viewer, '-F', '#{pane_id}')).split('\n').filter(Boolean);
-    const target = m.pane && ids.includes(m.pane) ? m.pane : viewer; // only this window's panes
+    const ids = (await tmux('list-panes', '-t', sid, '-F', '#{pane_id}')).split('\n').filter(Boolean);
+    const target = m.pane && ids.includes(m.pane) ? m.pane : sid; // only this window's panes
     if (m.do === 'right' || m.do === 'down') await tmux('split-window', m.do === 'right' ? '-h' : '-v', '-t', target, '-c', '#{pane_current_path}');
     else if (m.do === 'focus') await tmux('select-pane', '-t', target);
     else if (m.do === 'close' && ids.length > 1) {
@@ -786,12 +789,12 @@ wss.on('connection', async (ws, url: URL) => {
   const BORDERS = ['pane-border-lines', 'single', 'pane-border-style', 'fg=colour240', 'pane-active-border-style', 'fg=#6366f1', 'pane-border-format', ''];
   let sentLayout = '';
   const layout = async (): Promise<void> => {
-    const out = (await tmux('list-panes', '-t', viewer, '-F', '#{pane_id}\t#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}\t#{pane_active}\t#{pane_current_command}\t#{b:pane_current_path}\t#{?#{==:#{pane_title},#{host}},,#{pane_title}}\t#{pane-border-status}')).trim();
+    const out = (await tmux('list-panes', '-t', sid, '-F', '#{pane_id}\t#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}\t#{pane_active}\t#{pane_current_command}\t#{b:pane_current_path}\t#{?#{==:#{pane_title},#{host}},,#{pane_title}}\t#{pane-border-status}')).trim();
     const rows = out.split('\n').map((l) => l.split('\t'));
     const header = rows.length > 1 ? 'top' : 'off';
     if (rows[0]?.[9] !== header) {
-      const set = ['set-option', '-w', '-t', viewer, 'pane-border-status', header];
-      for (let i = 0; i < BORDERS.length; i += 2) set.push(';', 'set-option', '-w', '-t', viewer, BORDERS[i], BORDERS[i + 1]);
+      const set = ['set-option', '-w', '-t', sid, 'pane-border-status', header];
+      for (let i = 0; i < BORDERS.length; i += 2) set.push(';', 'set-option', '-w', '-t', sid, BORDERS[i], BORDERS[i + 1]);
       await tmux(...set);
       return layout(); // the header line moves every pane down a row
     }
@@ -841,7 +844,7 @@ wss.on('connection', async (ws, url: URL) => {
       term.resize(Math.max(2, Number(m.c) || 80), Math.max(2, Number(m.r) || 24));
       layoutSoon();
     }
-    else if (m.t === 'w') tmux('select-window', '-t', `${viewer}:${Number(m.w)}`).catch(() => {});
+    else if (m.t === 'w') tmux('select-window', '-t', `${sid}:${Number(m.w)}`).catch(() => {});
     else if (m.t === 'f') later(() => find(String(m.q || '').slice(0, 200), String(m.dir)));
     else if (m.t === 'p') later(() => pane({ do: String(m.do), pane: typeof m.pane === 'string' ? m.pane : undefined, force: !!m.force }));
     else if (m.t === 's') {
