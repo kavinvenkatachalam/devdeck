@@ -633,6 +633,11 @@ a.ov-row { color: inherit; text-decoration: none; }
 .wt-s { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); min-width: 0; }
 .wt-s > :not(.ellipsis), .wt-t > :not(.ellipsis) { flex: none; white-space: nowrap; } /* "1 change", tags and badges keep whole; the path gives */
 .wt-sess { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; max-width: 45%; }
+.wt-filter { flex-wrap: wrap; row-gap: 8px; }
+.wt-check { width: 16px; height: 16px; margin: 0; flex: none; accent-color: var(--danger); cursor: pointer; }
+.wt-row.picked { background: color-mix(in srgb, var(--danger) 8%, transparent); }
+.wt-row.unpickable { cursor: default; opacity: .6; }
+.wt-row.unpickable:hover { background: none; }
 
 /* ---------- diff & code ---------- */
 .diff-sum { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -877,7 +882,7 @@ a.ov-row { color: inherit; text-decoration: none; }
 
   /* worktree rows: name and details get the full width; the sessions in it go on a line of their own */
   .wt-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "ic main add" ". sess sess"; align-items: start; row-gap: 8px; column-gap: 10px; padding: 10px 6px 10px 12px; }
-  .wt-row > .i { grid-area: ic; margin-top: 3px; }
+  .wt-row > .i, .wt-row > .wt-check { grid-area: ic; margin-top: 3px; }
   .wt-main { grid-area: main; }
   .wt-row > .icon-btn { grid-area: add; margin-top: -6px; }
   .wt-sess { grid-area: sess; max-width: none; justify-content: flex-start; }
