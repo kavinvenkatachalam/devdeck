@@ -2,7 +2,7 @@
 // so it works through the same Tailscale URL as devdeck. Not bundled (it's large): install via brew.
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { request } from 'node:http';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, statSync, readlinkSync, realpathSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { connect } from 'node:net';
 import type { Duplex } from 'node:stream';
@@ -19,7 +19,8 @@ const RUN = join(DIR, 'run.json');
 
 const CANDIDATES = ['/opt/homebrew/bin/code-server', '/usr/local/bin/code-server'];
 // bump when the launch flags change, so a running code-server gets restarted with the new ones
-const LAUNCH_VERSION = 2;
+const LAUNCH_VERSION = 3;
+const LOG = join(DIR, 'code-server.log');
 
 export async function findCodeServer() {
   const which = (await capture('which', ['code-server'], { cwd: '/', env: cleanEnv() })).out;
@@ -28,7 +29,7 @@ export async function findCodeServer() {
 
 const readRun = () => {
   try {
-    return JSON.parse(readFileSync(RUN, 'utf8')) as { pid: number; procStart?: string; v?: number };
+    return JSON.parse(readFileSync(RUN, 'utf8')) as { pid: number; procStart?: string; v?: number; logAt?: number };
   } catch {
     return undefined;
   }
@@ -114,6 +115,11 @@ export function prepareProfile() {
   const mine = existsSync(join(VSCODE_USER, 'settings.json')) ? parseJsonc(readFileSync(join(VSCODE_USER, 'settings.json'), 'utf8')) : {};
   const machine = {
     'git.detectWorktrees': false,
+    // TypeScript's own watcher, not the editor's: through the editor's, each file it watches is a file held open by
+    // the one long-lived code-server process, on macOS. Visiting a few big checkouts piled up ~15,000 that never
+    // closed, and code-server then couldn't start anything (spawn EBADF): no extensions, so no git or TypeScript.
+    // tsserver's own watches end with it.
+    'typescript.tsserver.experimental.useVsCodeWatcher': false,
     'workbench.startupEditor': 'none',
     // no built-in AI chat panel: the agents run in the terminals (your own settings can turn it back on)
     'chat.disableAIFeatures': true,
@@ -199,6 +205,23 @@ export async function stopCodeServer() {
   if (await owned(run)) await killGroup(run!.pid);
 }
 
+// Running but unable to start a process (out of file handles, see above): its extension host is gone, so the
+// editor opens without git, TypeScript or any extension. Read from its log since this launch (all of it for a launch
+// from before logAt was kept). The Code tab restarts a stale one as it opens.
+function wedged(run: ReturnType<typeof readRun>) {
+  const size = statSync(LOG, { throwIfNoEntry: false })?.size ?? 0;
+  const from = Math.min(run?.logAt ?? 0, size);
+  if (size <= from) return false;
+  const buf = Buffer.alloc(Math.min(size - from, 4 << 20)); // the newest 4 MB at most
+  const fd = openSync(LOG, 'r');
+  try {
+    readSync(fd, buf, 0, buf.length, size - buf.length);
+  } finally {
+    closeSync(fd);
+  }
+  return /spawn (EBADF|EMFILE)/.test(buf.toString('utf8'));
+}
+
 export async function codeStatus() {
   const bin = await findCodeServer();
   const run = readRun();
@@ -210,7 +233,7 @@ export async function codeStatus() {
     installed: !!bin,
     bin,
     running,
-    stale: running && run?.v !== LAUNCH_VERSION,
+    stale: running && (run?.v !== LAUNCH_VERSION || wedged(run)),
     broken,
     node: bin ? codeNode(bin) : '',
     port: PORT,
@@ -231,9 +254,10 @@ export async function startCodeServer() {
   await syncExtensions(s.bin); // before launch, so they're active in the first window
   // workspace trust off: these are your own checkouts, and Restricted Mode turns git off in every new worktree
   const args = ['--auth', 'none', '--bind-addr', `127.0.0.1:${PORT}`, '--disable-telemetry', '--disable-update-check', '--disable-workspace-trust', '--user-data-dir', DATA, '--extensions-dir', EXT_DIR];
-  const pid = startDetached(s.bin, args, { cwd: DIR, env: cleanEnv(), log: join(DIR, 'code-server.log') });
-  writeFileSync(RUN, JSON.stringify({ pid, procStart: await procStart(pid), v: LAUNCH_VERSION }));
-  if ((await waitHttp(`http://127.0.0.1:${PORT}/healthz`, 60_000, () => alive(pid))) !== 'ready') throw new CmdError('code-server did not start', `see ${join(DIR, 'code-server.log')}`);
+  const logAt = statSync(LOG, { throwIfNoEntry: false })?.size ?? 0;
+  const pid = startDetached(s.bin, args, { cwd: DIR, env: cleanEnv(), log: LOG });
+  writeFileSync(RUN, JSON.stringify({ pid, procStart: await procStart(pid), v: LAUNCH_VERSION, logAt }));
+  if ((await waitHttp(`http://127.0.0.1:${PORT}/healthz`, 60_000, () => alive(pid))) !== 'ready') throw new CmdError('code-server did not start', `see ${LOG}`);
   return codeStatus();
 }
 
