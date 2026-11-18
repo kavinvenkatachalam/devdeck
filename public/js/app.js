@@ -162,7 +162,7 @@ function App() {
   const pageHead = (t) => html`<${TopBar} onBack=${back} crumbs=${[{ label: 'devdeck', icon: 'terminal', go: goHome }, { label: t }]} title=${t} />`;
 
   let main;
-  if (view === 'worktrees') main = html`<div class="view">${pageHead('Worktrees')}<div class="pane"><${WorktreesView} data=${data} idx=${idx} openWorktree=${openWorktree} openSession=${openSession}
+  if (view === 'worktrees') main = html`<div class="view">${pageHead('Worktrees')}<div class="pane"><${WorktreesView} data=${data} idx=${idx} refresh=${refresh} openWorktree=${openWorktree} openSession=${openSession}
       addHere=${addHere} adding=${adding} onNewWorktree=${() => setSheet({ mode: 'worktree', folder: '' })} /></div></div>`;
   else if (view === 'schedules') main = html`<div class="view">${pageHead('Schedules')}<div class="pane"><${SchedulesView} /></div></div>`;
   else if (view === 'tools') main = html`<div class="view">${pageHead('Tools')}<div class="pane"><${ToolsView} /></div></div>`;

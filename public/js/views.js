@@ -2,7 +2,7 @@
 import { html, useEffect, useState } from '/vendor/preact.js';
 import { ArtifactList, TopBar, useLens } from './chrome.js';
 import { EnvButtons, EnvPane, removeWorktree, useEnvControls } from './env.js';
-import { Copy, Icon, MenuButton, Section, ago, call, copy, isHome, phone, plural, reloadAll, shortPath, store, toast, ui } from './lib.js';
+import { Copy, Icon, MenuButton, Section, ago, ask, call, copy, isHome, phone, plural, reloadAll, shortPath, store, toast, ui } from './lib.js';
 import { AGENT, AgentLabel, PrBadge, PrCard, checkoutsOf, coTitle, confirmEnd, leadTab, prBlock, prLook, prStatus, renameFolderTo, renameSessionTo, serverState, sessionHere, tabDot, whereOf } from './model.js';
 import { ChangesPane, CodePane, PreviewPane, codeUrl, vscode } from './panes.js';
 import { ProjectsSheet } from './sheets.js';
@@ -307,22 +307,100 @@ export function Overview({ data, idx, refresh, openSession, openWorktree, onNew,
 
 // Every checkout of your projects in one list: branch, PR, changes, servers and the sessions running there.
 // Open one for its dev environment, changes and code; + starts a session in it.
-export function WorktreesView({ data, idx, openWorktree, openSession, addHere, adding, onNewWorktree }) {
+// One removal job after another (two at once would contend for the repo's git locks); the ones that didn't go, and why.
+async function removeEach(cos, discard, progress) {
+  const failed = [];
+  for (const [i, co] of cos.entries()) {
+    progress({ n: i + 1, total: cos.length, name: coTitle(co) });
+    try {
+      let j = await call('POST', '/worktrees/remove', { path: co.path, discard });
+      // a checkout runs one job at a time: one already running there (a setup, say) comes back instead
+      if (j.title !== 'Remove worktree') throw new Error(`busy: ${j.title.toLowerCase()} is running there`);
+      while (j.status === 'running') {
+        await new Promise((r) => setTimeout(r, 1000));
+        j = await call('GET', `/jobs/${j.id}`);
+      }
+      if (j.status === 'failed') failed.push({ co, error: j.error });
+    } catch (e) {
+      failed.push({ co, error: e.message });
+    }
+  }
+  return failed;
+}
+
+const UNSAVED = 'unsaved work would be lost: ';
+
+// Show: every checkout, or only those with a dev server up (remembered on this device).
+// Select: tick worktrees (never the main checkout) and delete them, each the way its own Remove does.
+export function WorktreesView({ data, idx, refresh, openWorktree, openSession, addHere, adding, onNewWorktree }) {
+  const [show, setShow] = useState(() => store.get('worktrees.show', 'all'));
+  const pick = (v) => { setShow(v); store.set('worktrees.show', v); };
+  const [picked, setPicked] = useState(null); // null: not selecting; else the ticked paths
+  const [removing, setRemoving] = useState(null); // { n, total, name } while deleting
   if (!data) return html`<div class="scroll muted">Loading…</div>`;
   const all = checkoutsOf(data, idx);
+  const running = all.filter((x) => serverState(x.co));
+  const shown = show === 'running' ? running : all;
+  const projects = show === 'running' ? data.projects.filter((p) => shown.some((x) => x.co.projectPath === p.path)) : data.projects;
+  const removable = shown.filter((x) => !x.co.main);
+  const chosen = picked ? removable.filter((x) => picked.has(x.key)) : []; // only what's on screen
+  const toggle = (key) => setPicked((s) => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
+  const allPicked = removable.length > 0 && chosen.length === removable.length;
+
+  const remove = async () => {
+    const cos = chosen.map((x) => x.co);
+    const ok = await ask({ title: `Delete ${plural(cos.length, 'worktree')}?`, ok: `Delete ${cos.length}`, danger: true,
+      body: `${cos.map((c) => `• ${coTitle(c)}`).join('\n')}\n\nEach one's servers stop, its sessions end, its databases are dropped and its folder is deleted. Branches are kept. One with uncommitted changes or unpushed commits is left for you to decide.` });
+    if (!ok) return;
+    let failed = await removeEach(cos, false, setRemoving);
+    const unsaved = failed.filter((f) => f.error?.startsWith(UNSAVED));
+    if (unsaved.length) {
+      setRemoving(null);
+      const discard = await ask({ title: `${plural(unsaved.length, 'worktree')} with unsaved work`, ok: 'Discard & delete', danger: true,
+        body: `${unsaved.map((f) => `• ${coTitle(f.co)}: ${f.error.slice(UNSAVED.length)}`).join('\n')}\n\nDiscard the changes and delete ${unsaved.length === 1 ? 'it' : 'them'} anyway? Unpushed commits on their branches stay in the repo; unpushed EE submodule commits are lost.` });
+      if (discard) failed = [...failed.filter((f) => !unsaved.includes(f)), ...(await removeEach(unsaved.map((f) => f.co), true, setRemoving))];
+      else failed = failed.filter((f) => !unsaved.includes(f)).concat(unsaved.map((f) => ({ ...f, kept: true })));
+    }
+    setRemoving(null);
+    setPicked(null);
+    await refresh?.();
+    const gone = cos.length - failed.length;
+    const errors = failed.filter((f) => !f.kept);
+    if (errors.length) await ask({ title: `${plural(errors.length, 'worktree')} not deleted`, cancel: null, body: `${gone ? `Deleted ${gone}.\n\n` : ''}${errors.map((f) => `• ${coTitle(f.co)}: ${f.error}`).join('\n')}` });
+    else toast(gone ? `Deleted ${plural(gone, 'worktree')}` : 'Nothing deleted');
+  };
+
   return html`
     <div class="scroll"><div class="wts">
-      ${data.projects.map((p) => {
-        const rows = all.filter((x) => x.co.projectPath === p.path);
+      ${data.projects.length > 0 && html`
+        <div class="row wt-filter">
+          <div class="seg">
+            <button class=${show === 'all' ? 'sel' : ''} disabled=${!!removing} onClick=${() => pick('all')}>All<span class="subtle">${all.length}</span></button>
+            <button class=${show === 'running' ? 'sel' : ''} disabled=${!!removing} onClick=${() => pick('running')}><span class=${`dot ${running.length ? 'ok' : 'off'}`}></span>Servers running<span class="subtle">${running.length}</span></button>
+          </div>
+          <span class="grow"></span>
+          ${removing ? html`<span class="small muted row"><${Icon} name="loader-circle" cls="sm spin" />Deleting ${removing.n} of ${removing.total}: ${removing.name}</span>`
+            : picked ? html`
+              <button class="btn sm ghost" disabled=${!removable.length} onClick=${() => setPicked(new Set(allPicked ? [] : removable.map((x) => x.key)))}>${allPicked ? 'Select none' : 'Select all'}</button>
+              <button class="btn sm" onClick=${() => setPicked(null)}>Cancel</button>
+              <button class="btn sm danger-fill" disabled=${!chosen.length} onClick=${remove}><${Icon} name="trash-2" cls="sm" />Delete${chosen.length ? ` ${chosen.length}` : ''}</button>`
+            : html`<button class="btn sm" disabled=${!removable.length} onClick=${() => setPicked(new Set())}><${Icon} name="circle-check" cls="sm" />Select</button>`}
+        </div>`}
+      ${show === 'running' && !running.length && data.projects.length > 0 && html`<p class="ov-empty">No worktree has its servers running.</p>`}
+      ${projects.map((p) => {
+        const rows = shown.filter((x) => x.co.projectPath === p.path);
         return html`
           <section class="wt-sec">
             <div class="wt-h"><${Icon} name="folder-git-2" cls="sm" /><b>${p.name}</b><span class="muted small">${plural(rows.length, 'checkout')}</span><span class="grow"></span>
               <button class="btn sm" onClick=${onNewWorktree}><${Icon} name="git-branch" cls="sm" />New worktree</button></div>
             <div class="wt-list">${rows.map(({ key, co, sessions }) => {
               const st = serverState(co);
+              const selecting = !!picked && !removing;
               return html`
-                <div class="wt-row" onClick=${() => openWorktree(key)}>
-                  <${Icon} name=${co.main ? 'folder-git-2' : 'git-branch'} cls="sm muted" />
+                <div class=${`wt-row ${picked?.has(key) ? 'picked' : ''} ${selecting && co.main ? 'unpickable' : ''}`} onClick=${() => (picked ? selecting && !co.main && toggle(key) : openWorktree(key))}>
+                  ${picked ? html`<input type="checkbox" class="wt-check" checked=${picked.has(key)} disabled=${co.main || !!removing} title=${co.main ? 'The main checkout is never deleted' : ''}
+                      onClick=${(e) => e.stopPropagation()} onChange=${() => toggle(key)} />`
+                    : html`<${Icon} name=${co.main ? 'folder-git-2' : 'git-branch'} cls="sm muted" />`}
                   <span class="wt-main">
                     <span class="wt-t"><span class="ellipsis">${coTitle(co)}</span>${co.main && html`<span class="tag">main checkout</span>`}${co.pr && html`<${PrBadge} pr=${co.pr} />`}</span>
                     <span class="wt-s">
@@ -331,8 +409,8 @@ export function WorktreesView({ data, idx, openWorktree, openSession, addHere, a
                       <span class="subtle ellipsis">${shortPath(co.path)}</span>
                     </span>
                   </span>
-                  <span class="wt-sess">${sessions.map((s) => { const t = leadTab(s); return html`<button class="chip-btn" onClick=${(e) => { e.stopPropagation(); openSession(s.name); }}><span class=${`dot ${t ? tabDot(t) : 'off'}`}></span>${s.name}</button>`; })}</span>
-                  <button class="icon-btn sm" title="New session here" disabled=${adding === key} onClick=${(e) => { e.stopPropagation(); addHere(key); }}><${Icon} name=${adding === key ? 'loader-circle' : 'plus'} cls=${`sm ${adding === key ? 'spin' : ''}`} /></button>
+                  <span class="wt-sess">${sessions.map((s) => { const t = leadTab(s); return html`<button class="chip-btn" disabled=${!!picked} onClick=${(e) => { e.stopPropagation(); openSession(s.name); }}><span class=${`dot ${t ? tabDot(t) : 'off'}`}></span>${s.name}</button>`; })}</span>
+                  ${!picked && html`<button class="icon-btn sm" title="New session here" disabled=${adding === key} onClick=${(e) => { e.stopPropagation(); addHere(key); }}><${Icon} name=${adding === key ? 'loader-circle' : 'plus'} cls=${`sm ${adding === key ? 'spin' : ''}`} /></button>`}
                 </div>`;
             })}</div>
           </section>`;
