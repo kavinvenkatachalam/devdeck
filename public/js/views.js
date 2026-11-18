@@ -307,13 +307,27 @@ export function Overview({ data, idx, refresh, openSession, openWorktree, onNew,
 
 // Every checkout of your projects in one list: branch, PR, changes, servers and the sessions running there.
 // Open one for its dev environment, changes and code; + starts a session in it.
+// Show: every checkout, or only those with a dev server up (remembered on this device).
 export function WorktreesView({ data, idx, openWorktree, openSession, addHere, adding, onNewWorktree }) {
+  const [show, setShow] = useState(() => store.get('worktrees.show', 'all'));
+  const pick = (v) => { setShow(v); store.set('worktrees.show', v); };
   if (!data) return html`<div class="scroll muted">Loading…</div>`;
   const all = checkoutsOf(data, idx);
+  const running = all.filter((x) => serverState(x.co));
+  const shown = show === 'running' ? running : all;
+  const projects = show === 'running' ? data.projects.filter((p) => shown.some((x) => x.co.projectPath === p.path)) : data.projects;
   return html`
     <div class="scroll"><div class="wts">
-      ${data.projects.map((p) => {
-        const rows = all.filter((x) => x.co.projectPath === p.path);
+      ${data.projects.length > 0 && html`
+        <div class="row wt-filter">
+          <div class="seg">
+            <button class=${show === 'all' ? 'sel' : ''} onClick=${() => pick('all')}>All<span class="subtle">${all.length}</span></button>
+            <button class=${show === 'running' ? 'sel' : ''} onClick=${() => pick('running')}><span class=${`dot ${running.length ? 'ok' : 'off'}`}></span>Servers running<span class="subtle">${running.length}</span></button>
+          </div>
+        </div>`}
+      ${show === 'running' && !running.length && data.projects.length > 0 && html`<p class="ov-empty">No worktree has its servers running.</p>`}
+      ${projects.map((p) => {
+        const rows = shown.filter((x) => x.co.projectPath === p.path);
         return html`
           <section class="wt-sec">
             <div class="wt-h"><${Icon} name="folder-git-2" cls="sm" /><b>${p.name}</b><span class="muted small">${plural(rows.length, 'checkout')}</span><span class="grow"></span>
